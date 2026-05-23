@@ -1,0 +1,30 @@
+# Video files (too large for git)
+*.webm
+*.mp4
+*.mkv
+*.avi
+*.mov
+
+# Audio files
+*.wav
+*.mp3
+*.flac
+*.aac
+
+# Subtitle files (seminar-specific outputs)
+*.srt
+*.vtt
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
