@@ -1,0 +1,47 @@
+#!/usr/bin/env zsh
+# transcribe <file> [more files...]
+# Converts each input to 16 kHz mono wav and transcribes it to Hebrew with
+# whisper.cpp, writing <input-without-ext>.txt and .srt next to the input.
+# Override the model with TRANSCRIBE_MODEL=/path/to/model.bin.
+set -uo pipefail
+
+# ${0:A} resolves symlinks, so this points at the repo dir even when this
+# script is invoked via a ~/bin symlink (the model lives beside it there).
+MODEL=${TRANSCRIBE_MODEL:-"${0:A:h}/ggml-model-whisper-custom.bin"}
+
+if (( $# == 0 )); then
+  print -u2 "usage: transcribe <file> [more files...]"
+  exit 2
+fi
+if [[ ! -f $MODEL ]]; then
+  print -u2 "transcribe: model not found: $MODEL"
+  print -u2 "            set TRANSCRIBE_MODEL or run install.sh."
+  exit 1
+fi
+if ! command -v whisper-cli >/dev/null 2>&1; then
+  print -u2 "transcribe: whisper-cli not found (brew install whisper-cpp / run install.sh)."
+  exit 1
+fi
+
+tmpdir=""
+cleanup() { [[ -n $tmpdir && -d $tmpdir ]] && rm -rf "$tmpdir"; }
+trap cleanup EXIT INT TERM
+
+for input in "$@"; do
+  if [[ ! -f $input ]]; then
+    print -u2 "transcribe: skip (not a file): $input"
+    continue
+  fi
+  base=${input:r}                 # strip extension, keep directory
+  tmpdir=$(mktemp -d)
+  wav="$tmpdir/audio.wav"
+
+  print "transcribe: $input"
+  ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -i "$input" -ar 16000 -ac 1 -c:a pcm_s16le "$wav"
+  whisper-cli -m "$MODEL" -l he -otxt -osrt -of "$base" -f "$wav"
+
+  rm -rf "$tmpdir"; tmpdir=""
+  print "  -> $base.txt"
+  print "  -> $base.srt"
+done

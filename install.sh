@@ -1,0 +1,78 @@
+#!/usr/bin/env zsh
+# Idempotent installer for the local Hebrew transcription pipeline.
+# Fresh machine:  git clone <repo> && cd <repo> && ./install.sh
+set -euo pipefail
+
+REPO=${0:A:h}
+BIN="$HOME/bin"
+MODEL="$REPO/ggml-model-whisper-custom.bin"
+MODEL_URL="https://huggingface.co/ivrit-ai/whisper-large-v3-ggml/resolve/main/ggml-model.bin"
+MODEL_SIZE=3095033483
+
+# 1. Homebrew
+if ! command -v brew >/dev/null 2>&1; then
+  print "Installing Homebrew..."
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || brew shellenv)"
+
+# 2. Formulae
+for f in whisper-cpp ffmpeg switchaudio-osx; do
+  if brew list --formula "$f" >/dev/null 2>&1; then
+    print "$f: already installed"
+  else
+    brew install "$f"
+  fi
+done
+
+# 3. BlackHole (cask; needs the macOS password, so only attempt with a terminal)
+if brew list --cask blackhole-2ch >/dev/null 2>&1; then
+  print "blackhole-2ch: already installed"
+elif [[ -t 0 ]]; then
+  print "Installing blackhole-2ch (will prompt for your macOS password)..."
+  brew install --cask blackhole-2ch
+else
+  print "blackhole-2ch: not installed and no interactive terminal for the password prompt."
+  print "  Run ./install.sh in a terminal to finish installing it."
+fi
+
+# 4. Model: verify size, download only if missing/corrupt
+if [[ -f $MODEL && $(stat -f%z "$MODEL") -eq $MODEL_SIZE ]]; then
+  print "model: OK ($MODEL_SIZE bytes)"
+else
+  print "model: downloading (resumable)..."
+  curl -L -C - -o "$MODEL" "$MODEL_URL"
+  [[ $(stat -f%z "$MODEL") -eq $MODEL_SIZE ]] || { print -u2 "model: size mismatch after download"; exit 1; }
+fi
+
+# 5. Compile the Swift CoreAudio helper (skip if binary is up to date)
+mkdir -p "$BIN"
+if [[ ! -x $BIN/meeting-devices || $REPO/meeting-devices.swift -nt $BIN/meeting-devices ]]; then
+  print "compiling meeting-devices..."
+  swiftc -O -framework CoreAudio -framework AudioToolbox \
+    -o "$BIN/meeting-devices" "$REPO/meeting-devices.swift"
+else
+  print "meeting-devices: up to date"
+fi
+
+# 6. Install record & transcribe into ~/bin (symlink -> repo, so the model
+#    beside them is found and repo edits take effect immediately)
+chmod +x "$REPO/record" "$REPO/transcribe"
+ln -sf "$REPO/record" "$BIN/record"
+ln -sf "$REPO/transcribe" "$BIN/transcribe"
+print "installed: record, transcribe, meeting-devices -> $BIN"
+
+# 7. Ensure ~/bin is on PATH (append to ~/.zshrc only if missing)
+case ":$PATH:" in
+  *":$BIN:"*) print "PATH: ~/bin already present" ;;
+  *)
+    if grep -qs 'HOME/bin' "$HOME/.zshrc" 2>/dev/null; then
+      print "PATH: ~/bin line already in ~/.zshrc (restart your shell)"
+    else
+      print '\nexport PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc"
+      print "PATH: added ~/bin to ~/.zshrc (restart your shell or: source ~/.zshrc)"
+    fi
+    ;;
+esac
+
+print "install complete."

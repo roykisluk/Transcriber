@@ -1,0 +1,16 @@
+# Large model file (downloaded/verified by install.sh)
+ggml-model-whisper-custom.bin
+*.bin
+
+# Recordings (kept out of the repo)
+/Recordings/
+*.m4a
+
+# Transcription outputs and temp wavs
+*.wav
+
+# Compiled Swift helper
+meeting-devices
+*.o
+
+.DS_Store

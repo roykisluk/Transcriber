@@ -1,0 +1,59 @@
+#!/usr/bin/env zsh
+# record [name]
+# Records mic + system audio to ~/Recordings/<name>-<timestamp>.m4a via the
+# "Meeting Input" aggregate. Switches the default output to "Meeting Output"
+# for the duration and restores it on exit (including Ctrl-C). Ctrl-C stops.
+set -uo pipefail
+
+name=${1:-meeting}
+MEETING_DEVICES=${MEETING_DEVICES:-"$HOME/bin/meeting-devices"}
+
+for tool in ffmpeg SwitchAudioSource; do
+  command -v "$tool" >/dev/null 2>&1 || { print -u2 "record: $tool not found (run install.sh)."; exit 1; }
+done
+[[ -x $MEETING_DEVICES ]] || { print -u2 "record: $MEETING_DEVICES missing (run install.sh)."; exit 1; }
+
+# 1. Ensure the aggregate devices exist / match the current defaults.
+"$MEETING_DEVICES" || { print -u2 "record: audio device setup failed (see message above)."; exit 1; }
+
+# 2. Remember the current default output so we can restore it.
+prev_out=$(SwitchAudioSource -c -t output 2>/dev/null || true)
+if [[ $prev_out == "Meeting Output" ]]; then
+  # Stale state (a previous run didn't restore): fall back to a real output.
+  prev_out=$(SwitchAudioSource -a -t output 2>/dev/null | grep -v '^Meeting Output$' | head -1)
+fi
+
+restore() {
+  [[ -n ${prev_out:-} ]] && SwitchAudioSource -t output -s "$prev_out" >/dev/null 2>&1 || true
+}
+trap restore EXIT INT TERM
+
+# 3. Route system audio through Meeting Output (so BlackHole hears it too).
+SwitchAudioSource -t output -s "Meeting Output" >/dev/null
+
+# 4. Resolve the avfoundation audio-device index of "Meeting Input" by name.
+dev_list=$(ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 || true)
+idx=$(print -r -- "$dev_list" | awk -F'[][]' \
+  '/AVFoundation audio devices/{a=1} a && /\] Meeting Input$/{print $4; exit}')
+if [[ -z $idx ]]; then
+  print -u2 "record: could not find the 'Meeting Input' audio device."
+  exit 1
+fi
+
+# 5. Record until Ctrl-C. `|| true` so a SIGINT stop still prints the next step.
+mkdir -p "$HOME/Recordings"
+out="$HOME/Recordings/${name}-$(date +%Y%m%d-%H%M%S).m4a"
+print "Recording 'Meeting Input' (index $idx) -> $out"
+print "Press Ctrl-C to stop."
+ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
+  -ac 1 -c:a aac -b:a 96k "$out" || true
+
+print ""
+if [[ -f $out ]]; then
+  print "Saved: $out"
+  print "Transcribe with:"
+  print "  transcribe \"$out\""
+else
+  print -u2 "record: no file was written."
+  exit 1
+fi
