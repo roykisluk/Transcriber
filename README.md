@@ -48,7 +48,10 @@ TRANSCRIBE_MODEL=/path/to/whisper-large-v3-turbo-ggml.bin transcribe file.m4a
 
 ## Manual steps (unavoidable)
 
-1. **macOS password** — once, when `install.sh` installs BlackHole.
+1. **macOS password** — once, when `install.sh` installs BlackHole. If
+   "Meeting Input/Output" still can't be created afterwards (BlackHole not
+   visible as an audio device), run `sudo killall coreaudiod` once to load the
+   new driver.
 2. **Microphone permission** — the first time you `record`, macOS shows a
    mic-access dialog; click **Allow** (for your terminal app).
 3. **Zoom** — leave audio output on **"Same as System"** (Zoom's default) so it
