@@ -66,7 +66,7 @@ print "installed: record, transcribe, meeting-devices -> $BIN"
 case ":$PATH:" in
   *":$BIN:"*) print "PATH: ~/bin already present" ;;
   *)
-    if grep -qs 'HOME/bin' "$HOME/.zshrc" 2>/dev/null; then
+    if grep -Eqs '(^|[^A-Za-z_])PATH="?\$HOME/bin' "$HOME/.zshrc" 2>/dev/null; then
       print "PATH: ~/bin line already in ~/.zshrc (restart your shell)"
     else
       print '\nexport PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc"

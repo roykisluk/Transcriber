@@ -27,9 +27,11 @@ tmpdir=""
 cleanup() { [[ -n $tmpdir && -d $tmpdir ]] && rm -rf "$tmpdir"; }
 trap cleanup EXIT INT TERM
 
+failed=0
 for input in "$@"; do
   if [[ ! -f $input ]]; then
     print -u2 "transcribe: skip (not a file): $input"
+    failed=1
     continue
   fi
   base=${input:r}                 # strip extension, keep directory
@@ -37,11 +39,23 @@ for input in "$@"; do
   wav="$tmpdir/audio.wav"
 
   print "transcribe: $input"
-  ffmpeg -nostdin -hide_banner -loglevel error -y \
-    -i "$input" -ar 16000 -ac 1 -c:a pcm_s16le "$wav"
-  whisper-cli -m "$MODEL" -l he -otxt -osrt -of "$base" -f "$wav"
+  if ! ffmpeg -nostdin -hide_banner -loglevel error -y \
+      -i "$input" -ar 16000 -ac 1 -c:a pcm_s16le "$wav"; then
+    print -u2 "transcribe: ffmpeg failed, skipping: $input"
+    rm -rf "$tmpdir"; tmpdir=""
+    failed=1
+    continue
+  fi
+  if ! whisper-cli -m "$MODEL" -l he -otxt -osrt -of "$base" -f "$wav"; then
+    print -u2 "transcribe: whisper-cli failed, skipping: $input"
+    rm -rf "$tmpdir"; tmpdir=""
+    failed=1
+    continue
+  fi
 
   rm -rf "$tmpdir"; tmpdir=""
   print "  -> $base.txt"
   print "  -> $base.srt"
 done
+
+exit $failed

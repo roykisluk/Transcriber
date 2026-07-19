@@ -29,7 +29,10 @@ restore() {
 trap restore EXIT INT TERM
 
 # 3. Route system audio through Meeting Output (so BlackHole hears it too).
-SwitchAudioSource -t output -s "Meeting Output" >/dev/null
+SwitchAudioSource -t output -s "Meeting Output" >/dev/null || {
+  print -u2 "record: failed to switch output to 'Meeting Output' (system audio would be missing); aborting."
+  exit 1
+}
 
 # 4. Resolve the avfoundation audio-device index of "Meeting Input" by name.
 dev_list=$(ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 || true)
