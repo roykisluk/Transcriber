@@ -3,7 +3,8 @@
 Zero-cost, fully local pipeline: record your mic **plus** system audio (e.g. a
 Zoom call, without Zoom's recorder), then transcribe to Hebrew with
 whisper.cpp and the [ivrit.ai](https://huggingface.co/ivrit-ai) fine-tuned
-`whisper-large-v3` model. Two commands: `record` and `transcribe`.
+`whisper-large-v3` model, then file it into a Notion "Meeting Notes" database
+(auto title + summary). Commands: `record`, `transcribe`, `notion-meeting`.
 
 ## Fresh-machine setup
 
@@ -19,8 +20,8 @@ cd Transcriber
 - verifies the model file `ggml-model-whisper-custom.bin` by size and downloads
   it only if missing/corrupt (it is **not** committed to git — ~3 GB);
 - compiles the Swift CoreAudio helper `meeting-devices` into `~/bin`;
-- symlinks `record` and `transcribe` into `~/bin` and adds `~/bin` to your
-  `PATH` in `~/.zshrc` if it isn't already there.
+- symlinks `record`, `transcribe`, and `notion-meeting` into `~/bin` and adds
+  `~/bin` to your `PATH` in `~/.zshrc` if it isn't already there.
 
 Open a new terminal (or `source ~/.zshrc`) afterward so `~/bin` is on `PATH`.
 
@@ -32,8 +33,22 @@ record                 # or: record standup   -> ~/Recordings/standup-<timestamp
 `record` builds the audio devices around your **current** default mic/output
 (so it keeps working when you switch to AirPods), switches system output to
 "Meeting Output" while recording, and restores your previous output on exit —
-including Ctrl-C. Press **Ctrl-C** to stop; it prints the exact `transcribe`
-command for the file it saved.
+including Ctrl-C. Press **Ctrl-C** to stop. It then **automatically transcribes
+the recording and creates a Notion "Meeting Notes" page** — auto-generated title
+(or your `record <name>` verbatim), auto summary, the recording date, and the
+full transcript as the page body — printing the saved file, transcript path, and
+Notion page URL. If transcription or the upload fails, the recording is safe on
+disk and it prints the exact `notion-meeting` command to retry.
+
+Requires the `claude` CLI logged in (`claude login`) with the Notion connector
+enabled — the upload uses your Claude Max subscription, no API key.
+
+```sh
+notion-meeting ~/Recordings/standup-20260719-143000.m4a        # or ... "Weekly sync"
+```
+Transcribes the file if its `.txt` doesn't exist yet, then files it into Notion.
+Run it by hand to retry a failed upload (no re-recording) or to import an old
+recording. With a second argument it becomes the Notion "Meeting name" verbatim.
 
 ```sh
 transcribe ~/Recordings/standup-20260719-143000.m4a

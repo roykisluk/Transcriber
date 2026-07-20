@@ -5,7 +5,8 @@
 # for the duration and restores it on exit (including Ctrl-C). Ctrl-C stops.
 set -uo pipefail
 
-name=${1:-meeting}
+name_arg=${1:-}            # empty unless the user actually named the meeting
+name=${name_arg:-meeting}  # filename stem only; never used as the Notion title
 MEETING_DEVICES=${MEETING_DEVICES:-"$HOME/bin/meeting-devices"}
 
 for tool in ffmpeg SwitchAudioSource; do
@@ -52,11 +53,30 @@ ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
   -ac 1 -c:a aac -b:a 96k "$out" || true
 
 print ""
-if [[ -f $out ]]; then
-  print "Saved: $out"
-  print "Transcribe with:"
-  print "  transcribe \"$out\""
-else
+if [[ ! -f $out ]]; then
   print -u2 "record: no file was written."
   exit 1
 fi
+print "Saved: $out"
+txt="${out:r}.txt"
+
+# Pass the user's name to Notion only if they actually gave one.
+nm=("$out")
+[[ -n $name_arg ]] && nm+=("$name_arg")
+
+if ! transcribe "$out"; then
+  print -u2 "record: transcription failed."
+  print -u2 "Recording is safe at: $out"
+  print -u2 "Retry with:  notion-meeting \"$out\"${name_arg:+ \"$name_arg\"}"
+  exit 1
+fi
+if ! notion-meeting "${nm[@]}"; then
+  print -u2 "record: Notion upload failed (transcript is on disk)."
+  print -u2 "Retry with:  notion-meeting \"$out\"${name_arg:+ \"$name_arg\"}"
+  exit 1
+fi
+
+print ""
+print "Saved:      $out"
+print "Transcript: $txt"
+# notion-meeting already printed the page URL as "Notion: <url>"

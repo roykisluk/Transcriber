@@ -57,10 +57,11 @@ fi
 
 # 6. Install record & transcribe into ~/bin (symlink -> repo, so the model
 #    beside them is found and repo edits take effect immediately)
-chmod +x "$REPO/record" "$REPO/transcribe"
+chmod +x "$REPO/record" "$REPO/transcribe" "$REPO/notion-meeting"
 ln -sf "$REPO/record" "$BIN/record"
 ln -sf "$REPO/transcribe" "$BIN/transcribe"
-print "installed: record, transcribe, meeting-devices -> $BIN"
+ln -sf "$REPO/notion-meeting" "$BIN/notion-meeting"
+print "installed: record, transcribe, notion-meeting, meeting-devices -> $BIN"
 
 # 7. Ensure ~/bin is on PATH (append to ~/.zshrc only if missing)
 case ":$PATH:" in
