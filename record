@@ -45,12 +45,14 @@ if [[ -z $idx ]]; then
 fi
 
 # 5. Record until Ctrl-C. `|| true` so a SIGINT stop still prints the next step.
+# Capture ALL aggregate channels as-is (no downmix): mic first, BlackHole last,
+# so transcribe-meeting can split near (mic/[Me]) from far (system/[Them]).
 mkdir -p "$HOME/Recordings"
 out="$HOME/Recordings/${name}-$(date +%Y%m%d-%H%M%S).m4a"
 print "Recording 'Meeting Input' (index $idx) -> $out"
 print "Press Ctrl-C to stop."
 ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
-  -ac 1 -c:a aac -b:a 96k "$out" || true
+  -c:a aac -b:a 96k "$out" || true
 restore   # explicit: Ctrl-C already restored via the INT trap, but a natural/`q` stop hasn't
 
 print ""
@@ -65,7 +67,7 @@ txt="${out:r}.txt"
 nm=("$out")
 [[ -n $name_arg ]] && nm+=("$name_arg")
 
-if ! transcribe "$out"; then
+if ! transcribe-meeting "$out"; then
   print -u2 "record: transcription failed."
   print -u2 "Recording is safe at: $out"
   print -u2 "Retry with:  notion-meeting \"$out\"${name_arg:+ \"$name_arg\"}"

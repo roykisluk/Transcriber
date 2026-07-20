@@ -8,6 +8,7 @@ set -uo pipefail
 # ${0:A} resolves symlinks, so this points at the repo dir even when this
 # script is invoked via a ~/bin symlink (the model lives beside it there).
 MODEL=${TRANSCRIBE_MODEL:-"${0:A:h}/ggml-model-whisper-custom.bin"}
+VAD_MODEL=${TRANSCRIBE_VAD_MODEL:-"${0:A:h}/ggml-silero-v5.1.2.bin"}
 
 if (( $# == 0 )); then
   print -u2 "usage: transcribe <file> [more files...]"
@@ -22,6 +23,21 @@ if ! command -v whisper-cli >/dev/null 2>&1; then
   print -u2 "transcribe: whisper-cli not found (brew install whisper-cpp / run install.sh)."
   exit 1
 fi
+
+# VAD on by default (drops whisper's silence-gap hallucinations); TRANSCRIBE_VAD=0
+# to disable. Missing VAD model => warn once and continue without it, don't fail.
+vad_args=()
+if [[ ${TRANSCRIBE_VAD:-1} != 0 ]]; then
+  if [[ -f $VAD_MODEL ]]; then
+    vad_args=(--vad --vad-model "$VAD_MODEL")
+  else
+    print -u2 "transcribe: VAD model not found ($VAD_MODEL); continuing without VAD (TRANSCRIBE_VAD=0 to silence, or run install.sh)."
+  fi
+fi
+
+# Optional vocabulary biasing: nudges spelling of domain terms. Unset => stock behavior.
+prompt_args=()
+[[ -n ${TRANSCRIBE_PROMPT:-} ]] && prompt_args=(--prompt "$TRANSCRIBE_PROMPT")
 
 tmpdir=""
 cleanup() { [[ -n $tmpdir && -d $tmpdir ]] && rm -rf "$tmpdir"; }
@@ -46,7 +62,7 @@ for input in "$@"; do
     failed=1
     continue
   fi
-  if ! whisper-cli -m "$MODEL" -l he -otxt -osrt -of "$base" -f "$wav"; then
+  if ! whisper-cli -m "$MODEL" -l he "${vad_args[@]}" "${prompt_args[@]}" -otxt -osrt -of "$base" -f "$wav"; then
     print -u2 "transcribe: whisper-cli failed, skipping: $input"
     rm -rf "$tmpdir"; tmpdir=""
     failed=1

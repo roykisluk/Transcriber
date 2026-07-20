@@ -8,6 +8,9 @@ BIN="$HOME/bin"
 MODEL="$REPO/ggml-model-whisper-custom.bin"
 MODEL_URL="https://huggingface.co/ivrit-ai/whisper-large-v3-ggml/resolve/main/ggml-model.bin"
 MODEL_SIZE=3095033483
+VAD_MODEL="$REPO/ggml-silero-v5.1.2.bin"
+VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin"
+VAD_MODEL_SIZE=885098
 
 # 1. Homebrew
 if ! command -v brew >/dev/null 2>&1; then
@@ -45,6 +48,15 @@ else
   [[ $(stat -f%z "$MODEL") -eq $MODEL_SIZE ]] || { print -u2 "model: size mismatch after download"; exit 1; }
 fi
 
+# 4b. Silero VAD model (small; used by whisper.cpp --vad to skip silence)
+if [[ -f $VAD_MODEL && $(stat -f%z "$VAD_MODEL") -eq $VAD_MODEL_SIZE ]]; then
+  print "vad model: OK ($VAD_MODEL_SIZE bytes)"
+else
+  print "vad model: downloading..."
+  curl -L -o "$VAD_MODEL" "$VAD_MODEL_URL"
+  [[ $(stat -f%z "$VAD_MODEL") -eq $VAD_MODEL_SIZE ]] || { print -u2 "vad model: size mismatch after download"; exit 1; }
+fi
+
 # 5. Compile the Swift CoreAudio helper (skip if binary is up to date)
 mkdir -p "$BIN"
 if [[ ! -x $BIN/meeting-devices || $REPO/meeting-devices.swift -nt $BIN/meeting-devices ]]; then
@@ -57,11 +69,12 @@ fi
 
 # 6. Install record & transcribe into ~/bin (symlink -> repo, so the model
 #    beside them is found and repo edits take effect immediately)
-chmod +x "$REPO/record" "$REPO/transcribe" "$REPO/notion-meeting"
+chmod +x "$REPO/record" "$REPO/transcribe" "$REPO/transcribe-meeting" "$REPO/notion-meeting"
 ln -sf "$REPO/record" "$BIN/record"
 ln -sf "$REPO/transcribe" "$BIN/transcribe"
+ln -sf "$REPO/transcribe-meeting" "$BIN/transcribe-meeting"
 ln -sf "$REPO/notion-meeting" "$BIN/notion-meeting"
-print "installed: record, transcribe, notion-meeting, meeting-devices -> $BIN"
+print "installed: record, transcribe, transcribe-meeting, notion-meeting, meeting-devices -> $BIN"
 
 # 7. Ensure ~/bin is on PATH (append to ~/.zshrc only if missing)
 case ":$PATH:" in
