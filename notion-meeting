@@ -24,7 +24,7 @@ if [[ $input == *.txt ]]; then
 else
   txt=${input:r}.txt
   if [[ ! -f $txt ]]; then
-    transcribe-meeting "$input" || { print -u2 "notion-meeting: transcription failed: $input"; exit 1; }
+    "${0:A:h}/transcribe-meeting" "$input" || { print -u2 "notion-meeting: transcription failed: $input"; exit 1; }
   fi
 fi
 [[ -s $txt ]] || { print -u2 "notion-meeting: transcript missing or empty (silent recording?): $txt"; exit 1; }
