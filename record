@@ -50,9 +50,12 @@ fi
 mkdir -p "$HOME/Recordings"
 out="$HOME/Recordings/${name}-$(date +%Y%m%d-%H%M%S).m4a"
 print "Recording 'Meeting Input' (index $idx) -> $out"
-print "Press Ctrl-C to stop."
+print "Press Ctrl-C ONCE to stop (repeated presses hard-kill ffmpeg)."
+# Fragmented mp4 (empty_moov + 5s fragments): file stays readable even if
+# ffmpeg is hard-killed (e.g. repeated Ctrl-C) — at most the last ~5s are lost.
 ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
-  -c:a aac -b:a 96k "$out" || true
+  -c:a aac -b:a 96k \
+  -movflags +empty_moov+default_base_moof -frag_duration 5000000 "$out" || true
 restore   # explicit: Ctrl-C already restored via the INT trap, but a natural/`q` stop hasn't
 
 print ""

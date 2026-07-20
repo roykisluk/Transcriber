@@ -42,7 +42,9 @@ record                 # or: record standup   -> ~/Recordings/standup-<timestamp
 `record` builds the audio devices around your **current** default mic/output
 (so it keeps working when you switch to AirPods), switches system output to
 "Meeting Output" while recording, and restores your previous output on exit —
-including Ctrl-C. Press **Ctrl-C** to stop. It then **automatically transcribes
+including Ctrl-C. Press **Ctrl-C once** to stop and wait a moment — repeated
+presses hard-kill ffmpeg. (Recordings are written as fragmented mp4, so even a
+hard kill loses at most the last ~5 seconds.) It then **automatically transcribes
 the recording and creates a Notion "Meeting Notes" page** — auto-generated
 English title (or your `record <name>` verbatim), a structured English summary
 (Action Items as checkboxes + thematic sections), the recording date, and the
