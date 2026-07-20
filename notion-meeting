@@ -27,7 +27,7 @@ else
     transcribe "$input" || { print -u2 "notion-meeting: transcription failed: $input"; exit 1; }
   fi
 fi
-[[ -f $txt ]] || { print -u2 "notion-meeting: transcript not found: $txt"; exit 1; }
+[[ -s $txt ]] || { print -u2 "notion-meeting: transcript missing or empty (silent recording?): $txt"; exit 1; }
 
 # Recording datetime from the source file's mtime (local ISO 8601).
 mtime=$(date -r "$input" "+%Y-%m-%dT%H:%M:%S")

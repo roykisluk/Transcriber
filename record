@@ -51,6 +51,7 @@ print "Recording 'Meeting Input' (index $idx) -> $out"
 print "Press Ctrl-C to stop."
 ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
   -ac 1 -c:a aac -b:a 96k "$out" || true
+restore   # explicit: Ctrl-C already restored via the INT trap, but a natural/`q` stop hasn't
 
 print ""
 if [[ ! -f $out ]]; then
