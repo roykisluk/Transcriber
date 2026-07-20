@@ -2,6 +2,9 @@
 # transcribe-meeting <recording.m4a>
 # Split-channel transcription for "Meeting Input" aggregate recordings.
 # The aggregate records mic channels FIRST, BlackHole's 2 channels LAST, so:
+# ponytail: assumes AAC's canonical channel layout preserves the capture order —
+# unverified until a real >=3ch recording; if [Me]/[Them] come out swapped, this
+# mapping is the place to fix.
 #   near ("[Me]")   = downmix of channels 0 .. N-3   (your mic)
 #   far  ("[Them]") = downmix of the last two, N-2,N-1 (system / Zoom)
 # Transcribes each side separately, then merges the two .srt by start time into
