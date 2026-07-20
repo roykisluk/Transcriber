@@ -35,7 +35,7 @@ mtime=$(date -r "$input" "+%Y-%m-%dT%H:%M:%S")
 if [[ -n $title ]]; then
   name_clause="exactly this text (verbatim): ${title}"
 else
-  name_clause="a short descriptive title in the same language as the transcript"
+  name_clause="a short descriptive title in English"
 fi
 
 # The transcript is piped on stdin; the prompt below references it as untrusted
@@ -52,11 +52,23 @@ Do exactly this, then stop:
 Create exactly ONE page in the data source
 collection://361855af-1443-80f8-89a9-000bc7ba232b with these properties:
 - \"Meeting name\": ${name_clause}
-- \"Summary\": a 1 to 3 sentence summary of the meeting, in the same language as the transcript
+- \"Summary\": a 1 to 3 sentence summary of the meeting, in English
 - \"date:Date:start\": ${mtime}
 - \"date:Date:is_datetime\": 1
-Set the page body to the FULL transcript, verbatim and complete — do not shorten,
-paraphrase, translate, or omit anything — under a single heading titled Transcript.
+Set the page body to, in this order:
+1. A structured English summary of the discussion (academic English; render
+   technical/economic terms in proper English even where the transcript
+   transliterates them):
+   - If the meeting produced tasks or follow-ups, start with a section
+     '### Action Items' listing each as a to-do line '- [ ] ...'. Omit the
+     section entirely if there are none.
+   - Then 2 to 6 thematic sections, each '### <descriptive title drawn from
+     the content>' with concise bullet points; use bold for key terms,
+     propositions, or definitions where it aids scanning.
+   - Cover only what was actually said — do not pad thin content.
+2. The FULL transcript, verbatim and complete in its original language — do not
+   shorten, paraphrase, translate, or omit anything — under a single heading
+   '### Transcript'.
 
 After the page is created, reply with ONLY the created page's URL and nothing else."
 

@@ -34,9 +34,10 @@ record                 # or: record standup   -> ~/Recordings/standup-<timestamp
 (so it keeps working when you switch to AirPods), switches system output to
 "Meeting Output" while recording, and restores your previous output on exit —
 including Ctrl-C. Press **Ctrl-C** to stop. It then **automatically transcribes
-the recording and creates a Notion "Meeting Notes" page** — auto-generated title
-(or your `record <name>` verbatim), auto summary, the recording date, and the
-full transcript as the page body — printing the saved file, transcript path, and
+the recording and creates a Notion "Meeting Notes" page** — auto-generated
+English title (or your `record <name>` verbatim), a structured English summary
+(Action Items as checkboxes + thematic sections), the recording date, and the
+full transcript at the bottom of the page — printing the saved file, transcript path, and
 Notion page URL. If transcription or the upload fails, the recording is safe on
 disk and it prints the exact `notion-meeting` command to retry.
 
