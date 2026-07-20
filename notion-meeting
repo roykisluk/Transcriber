@@ -83,7 +83,7 @@ After the page is created, reply with ONLY the created page's URL and nothing el
 
 print "notion-meeting: creating Notion page via claude (~30-60s)..."
 err=$(mktemp)
-reply=$(claude -p "$prompt" --model sonnet \
+reply=$(claude -p "$prompt" --model opus \
   --allowedTools "mcp__claude_ai_Notion__notion-create-pages" \
   < "$txt" 2>"$err")
 rc=$?
