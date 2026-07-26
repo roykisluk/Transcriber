@@ -1,0 +1,189 @@
+#!/usr/bin/env zsh
+# lecture-subtitles [options] <video>
+#
+# Subtitles for recorded lectures: heavily accented English, dense technical
+# vocabulary, long runtime. Writes <base>_subs.srt next to the input and, unless
+# -n, a subtitled .mp4.
+#
+#   -s START     start offset (ffmpeg syntax: 46:00, 1:15:30, or seconds)
+#   -t DURATION  length to process (default: to end of file)
+#   -S SLIDES    slide-capture video; its picture is muxed with <video>'s audio
+#                and letterboxed so subtitles never cover the slide
+#   -p FILE      vocabulary prompt   (default: lecture-prompt.txt beside this script)
+#   -g FILE      glossary of fixes   (default: lecture-glossary.txt)
+#   -o FILE      output video path
+#   -n           subtitles only, no video
+#   -b           BURN subtitles into the picture (re-encodes; hot and slow).
+#                Default is a soft subtitle track muxed by stream copy: no
+#                re-encoding at all, so it is near-instant and stays cool.
+#
+# Env: LECTURE_MODEL, LECTURE_VAD_MODEL, LECTURE_VAD=0, LECTURE_PROMPT_FILE,
+#      LECTURE_GLOSSARY, LECTURE_THREADS, LECTURE_ENCODER=x264, LECTURE_NICE.
+#
+# Why these settings (measured on a 2.5 h accented lecture; see README):
+#   -mc 192  whisper's text context is 224 tokens, so -mc >=224 means NO cap and
+#            the transcript collapses into lowercase run-on gibberish (91% of cues,
+#            88-cue runs). 192 is the highest usable value and scored best.
+#   -sns     without it whisper replaces stretches it cannot decode with canned
+#            "thanks for watching / subscribe" filler, DESTROYING real speech.
+#   VAD      dead air (breaks, writing on the board) is where that filler appears.
+#            VAD alone makes raw cue timing worse -- but srtfix.py re-times every
+#            cue from the silence map afterwards, so that cost is undone and only
+#            the benefit remains. Measured over 70 min: 2 hallucinations -> 0, and
+#            MORE speech recovered (7595 -> 7718 words). LECTURE_VAD=0 disables.
+#   prompt carried across every window is what keeps technical spelling stable.
+set -uo pipefail
+
+here=${0:A:h}
+MODEL=${LECTURE_MODEL:-"$here/ggml-large-v3.bin"}
+VAD_MODEL=${LECTURE_VAD_MODEL:-"$here/ggml-silero-v5.1.2.bin"}
+PROMPT_FILE=${LECTURE_PROMPT_FILE:-"$here/lecture-prompt.txt"}
+GLOSSARY=${LECTURE_GLOSSARY:-"$here/lecture-glossary.txt"}
+THREADS=${LECTURE_THREADS:-8}
+# Rendering, not transcription, is what cooks the machine: whisper runs on the
+# Metal GPU (~40% CPU), but libx264 pegs every core. Capping its threads costs
+# ~2x wall time and NOTHING in quality or file size (measured: 1503% -> 333% CPU,
+# both 982K). h264_videotoolbox is cooler still but fixed-bitrate, and bloated
+# static slides ~13x, so it is opt-in only.
+ENC_THREADS=${LECTURE_ENC_THREADS:-2}
+if [[ ${LECTURE_ENCODER:-x264} == vt ]]; then
+  VENC=(-c:v h264_videotoolbox -b:v 8M)
+  MPVENC=(--ovc=h264_videotoolbox --ovcopts=b=6M)
+else
+  VENC=(-threads $ENC_THREADS -c:v libx264 -crf 18 -preset veryfast)
+  MPVENC=(--ovc=libx264 --ovcopts=crf=18,preset=veryfast,threads=$ENC_THREADS)
+fi
+# keep the machine responsive even when a core-hungry step slips through
+NICE=(nice -n ${LECTURE_NICE:-10})
+SRTFIX="$here/srtfix.py"
+
+start=""; dur=""; slides=""; out=""; novideo=0; burn=0
+while getopts "s:t:S:p:g:o:nbh" opt; do
+  case $opt in
+    s) start=$OPTARG ;;
+    t) dur=$OPTARG ;;
+    S) slides=$OPTARG ;;
+    p) PROMPT_FILE=$OPTARG ;;
+    g) GLOSSARY=$OPTARG ;;
+    o) out=$OPTARG ;;
+    n) novideo=1 ;;
+    b) burn=1 ;;
+    h) sed -n '2,31p' "${0:A}"; exit 0 ;;
+    *) print -u2 "see: lecture-subtitles -h"; exit 2 ;;
+  esac
+done
+shift $((OPTIND-1))
+(( $# == 1 )) || { print -u2 "usage: lecture-subtitles [options] <video>   (-h for help)"; exit 2 }
+src=$1
+
+for f in "$src" "$MODEL" "$SRTFIX"; do
+  [[ -f $f ]] || { print -u2 "lecture-subtitles: not found: $f"; exit 1 }
+done
+[[ -n $slides && ! -f $slides ]] && { print -u2 "lecture-subtitles: slides not found: $slides"; exit 1 }
+command -v whisper-cli >/dev/null || { print -u2 "lecture-subtitles: whisper-cli missing (brew install whisper-cpp)"; exit 1 }
+command -v ffmpeg      >/dev/null || { print -u2 "lecture-subtitles: ffmpeg missing (brew install ffmpeg)"; exit 1 }
+if (( ! novideo )) && ! command -v mpv >/dev/null; then
+  # Homebrew's ffmpeg is built without libass, so it cannot burn subtitles at all.
+  print -u2 "lecture-subtitles: mpv missing (brew install mpv) — needed to burn subtitles."
+  print -u2 "                   use -n to produce the .srt only."
+  exit 1
+fi
+
+base=${src:r}
+[[ -n $start ]] && base="${base}_from_${start//:/m}"
+srt="${base}_subs.srt"
+[[ -z $out ]] && out="${base}_subtitled.mp4"
+
+tmp=$(mktemp -d) || exit 1
+trap '[[ -d $tmp ]] && rm -rf "$tmp"' EXIT INT TERM
+
+seek=(); [[ -n $start ]] && seek+=(-ss "$start"); [[ -n $dur ]] && seek+=(-t "$dur")
+prompt_args=()
+if [[ -f $PROMPT_FILE ]]; then
+  prompt_args=(--prompt "$(cat "$PROMPT_FILE")" --carry-initial-prompt)
+else
+  print -u2 "lecture-subtitles: no prompt file ($PROMPT_FILE); continuing without vocabulary biasing."
+fi
+
+print "[1/5] extracting audio"
+ffmpeg -v error "${seek[@]}" -i "$src" -vn -ac 1 -ar 16000 -c:a pcm_s16le -y "$tmp/a.wav" || exit 1
+
+vad_args=()
+if [[ ${LECTURE_VAD:-1} != 0 ]]; then
+  if [[ -f $VAD_MODEL ]]; then
+    vad_args=(--vad -vm "$VAD_MODEL" -vt 0.5 -vsd 200 -vp 100 -vmsd 30)
+  else
+    print -u2 "lecture-subtitles: VAD model not found ($VAD_MODEL); continuing without it."
+    print -u2 "                   expect canned-filler hallucinations over dead air."
+  fi
+fi
+
+print "[2/5] transcribing (large-v3, beam 8, -mc 192, -sns${vad_args:+, VAD})"
+whisper-cli -m "$MODEL" -f "$tmp/a.wav" -l en -t "$THREADS" -np \
+  -bs 8 -bo 8 -et 2.6 -lpt -1.0 -mc 192 -sns \
+  "${vad_args[@]}" "${prompt_args[@]}" -osrt -otxt -of "$tmp/a" >"$tmp/whisper.log" 2>&1 || {
+    print -u2 "lecture-subtitles: whisper failed; see $tmp/whisper.log"; cp "$tmp/whisper.log" ./ 2>/dev/null; exit 1 }
+
+print "[3/5] silence map + re-timing"
+ffmpeg -v info -i "$tmp/a.wav" -af "silencedetect=noise=-35dB:d=0.35" -f null - 2>"$tmp/sil.txt"
+gloss=(); [[ -f $GLOSSARY ]] && gloss=("$GLOSSARY")
+shift_s=0
+if [[ -n $start ]]; then
+  shift_s=$(python3 -c 'import sys;p=sys.argv[1].split(":");print(sum(float(x)*60**i for i,x in enumerate(reversed(p))))' "$start")
+fi
+python3 "$SRTFIX" "$tmp/a.srt" "$tmp/sil.txt" "$srt" --shift "$shift_s" "${gloss[@]}" || exit 1
+cp "$tmp/a.txt" "${base}_transcript.txt" 2>/dev/null
+print "      -> $srt"
+
+if (( novideo )); then print "[done] subtitles only"; exit 0; fi
+
+if (( ! burn )); then
+  # Soft subtitles: stream-copy the slide picture and the lecture audio, attach
+  # the .srt as a track. No transcoding -> no heat, seconds instead of minutes.
+  # Full length is kept (cheap, since nothing is re-encoded) and the cues sit on
+  # the original timeline, so seeking to any point stays in sync.
+  print "[4/4] muxing soft subtitles (stream copy, no re-encode)"
+  vsrc=${slides:-$src}
+  "${NICE[@]}" ffmpeg -v error -i "$vsrc" -i "$src" -i "$srt" \
+    -map 0:v -map 1:a -map 2 -c copy -c:s mov_text -metadata:s:s:0 language=eng \
+    -movflags +faststart -y "$out" || exit 1
+  print "[done] $out"
+  print "       (soft subtitle track; enable subtitles in your player. -b burns them in.)"
+  exit 0
+fi
+
+print "[4/5] building video"
+if [[ -n $slides ]]; then
+  read -r sw sh <<<"$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$slides" | tr ',' ' ')"
+  bar=$(( sh / 6 ))                     # letterbox strip for the subtitles
+  "${NICE[@]}" ffmpeg -v error -stats "${seek[@]}" -i "$slides" "${seek[@]}" -i "$src" \
+    -map 0:v -map 1:a -vf "pad=${sw}:$((sh+bar)):0:0:black" \
+    "${VENC[@]}" -pix_fmt yuv420p -c:a aac -b:a 160k \
+    -y "$tmp/v.mp4" || exit 1
+  playw=$sw; playh=$((sh+bar)); margin=$(( bar / 8 )); font=$(( sh / 24 ))
+else
+  read -r sw sh <<<"$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$src" | tr ',' ' ')"
+  "${NICE[@]}" ffmpeg -v error -stats "${seek[@]}" -i "$src" \
+    "${VENC[@]}" -pix_fmt yuv420p -c:a aac -b:a 160k \
+    -y "$tmp/v.mp4" || exit 1
+  playw=$sw; playh=$sh; margin=$(( sh / 20 )); font=$(( sh / 26 ))
+fi
+
+print "[5/5] burning subtitles"
+python3 "$SRTFIX" "$tmp/a.srt" "$tmp/sil.txt" "$tmp/rel.srt" "${gloss[@]}" >/dev/null || exit 1
+ffmpeg -v error -i "$tmp/rel.srt" -y "$tmp/s.ass" || exit 1
+python3 - "$tmp/s.ass" "$playw" "$playh" "$font" "$margin" <<'PY'
+import re, sys
+p, w, h, font, margin = sys.argv[1], *map(int, sys.argv[2:6])
+s = open(p, encoding="utf-8").read()
+s = re.sub(r"^PlayResX: .*$", f"PlayResX: {w}", s, flags=re.M)
+s = re.sub(r"^PlayResY: .*$", f"PlayResY: {h}", s, flags=re.M)
+s = re.sub(r"^Style: Default.*$",
+           f"Style: Default,Helvetica,{font},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
+           f"0,0,0,0,100,100,0,0,1,1.6,0,2,40,40,{margin},1", s, flags=re.M)
+open(p, "w", encoding="utf-8").write(s)
+PY
+"${NICE[@]}" mpv "$tmp/v.mp4" --sub-file="$tmp/s.ass" --no-config --really-quiet \
+  --o="$out" "${MPVENC[@]}" --oac=aac --oacopts=b=160k || exit 1
+
+print "[done] $out"

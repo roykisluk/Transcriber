@@ -20,7 +20,7 @@ fi
 eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || brew shellenv)"
 
 # 2. Formulae
-for f in whisper-cpp ffmpeg switchaudio-osx; do
+for f in whisper-cpp ffmpeg switchaudio-osx mpv; do
   if brew list --formula "$f" >/dev/null 2>&1; then
     print "$f: already installed"
   else
@@ -69,12 +69,13 @@ fi
 
 # 6. Install record & transcribe into ~/bin (symlink -> repo, so the model
 #    beside them is found and repo edits take effect immediately)
-chmod +x "$REPO/record" "$REPO/transcribe" "$REPO/transcribe-meeting" "$REPO/notion-meeting"
+chmod +x "$REPO/record" "$REPO/transcribe" "$REPO/transcribe-meeting" "$REPO/notion-meeting" "$REPO/lecture-subtitles"
 ln -sf "$REPO/record" "$BIN/record"
 ln -sf "$REPO/transcribe" "$BIN/transcribe"
 ln -sf "$REPO/transcribe-meeting" "$BIN/transcribe-meeting"
 ln -sf "$REPO/notion-meeting" "$BIN/notion-meeting"
-print "installed: record, transcribe, transcribe-meeting, notion-meeting, meeting-devices -> $BIN"
+ln -sf "$REPO/lecture-subtitles" "$BIN/lecture-subtitles"
+print "installed: record, transcribe, transcribe-meeting, notion-meeting, lecture-subtitles, meeting-devices -> $BIN"
 
 # 7. Ensure ~/bin is on PATH (append to ~/.zshrc only if missing)
 case ":$PATH:" in

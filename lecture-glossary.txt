@@ -1,0 +1,12 @@
+# Systematic ASR errors seen in this lecture.  regex<TAB>replacement
+# Only unambiguous strings — nothing that could be a legitimate English phrase.
+# Extend as you spot more; rerun srtfix.py to re-apply.
+\b[EU]u?[kg]ensian\b	New Keynesian
+\bEukensian\b	New Keynesian
+\bUkensian\b	New Keynesian
+\b[Ss]olo residual\b	Solow residual
+\bShashinsk(y|i)\b	Sheshinski
+\bChechensk(y|i)\b	Sheshinski
+\bSheshinsky\b	Sheshinski
+\bcalo pricing\b	Calvo pricing
+\bCalo pricing\b	Calvo pricing

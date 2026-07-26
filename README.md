@@ -124,3 +124,71 @@ export TRANSCRIBE_PROMPT="Economics seminar. Terms: identification, instrumental
   silence. First run of `transcribe` loads the 3 GB model, which takes a bit longer.
 - If `record` reports "the default input/output is BlackHole itself", set a real
   device as your system default in System Settings → Sound, then rerun.
+
+## Lecture subtitles (`lecture-subtitles`)
+
+A second, separate pipeline for **recorded lectures**: heavily accented English,
+dense technical vocabulary, 2+ hours long, output meant to be watched as
+subtitles. Different problem from meetings, so different settings (see below).
+
+```sh
+lecture-subtitles -s 46:00 -S lecture_object.mp4 lecture_dv.mp4
+lecture-subtitles -n talk.mp4                      # subtitles only, no render
+```
+`-s/-t` take ffmpeg time syntax (`46:00`, `1:15:30`, seconds). `-S` supplies a
+slide-capture video: its picture is muxed with the main file's audio and
+letterboxed, so subtitles sit in a black strip and never cover the slide.
+Writes `<base>_subs.srt`, `<base>_transcript.txt`, and `<base>_subtitled.mp4`
+next to the input. Burning needs `mpv` (`brew install mpv`) because Homebrew's
+ffmpeg is built without libass and cannot render subtitles at all.
+
+Vocabulary lives in `lecture-prompt.txt` (fed to whisper every window) and
+`lecture-glossary.txt` (regex→replacement fixes applied after). **Both are
+course-specific — swap them per subject.** Build the prompt from the actual
+slide deck; it is the single biggest accuracy lever for an unfamiliar accent.
+
+### Why these settings differ from `transcribe`
+
+Measured on a 2.5 h lecture, scoring transcripts against known technical terms:
+
+- **`-mc 192`** — whisper's text context is 224 tokens, so any `-mc` ≥ 224 means
+  *no cap*. Uncapped, the transcript collapses into lowercase run-on gibberish
+  (91% of cues, one 88-cue run) and terminology is destroyed. 192 is the highest
+  usable value and scored best (net 33 vs 10–13 at other caps).
+- **`-sns`** — without it whisper replaces stretches it cannot decode with canned
+  *"thanks for watching, subscribe to my channel"* filler. This is not silence
+  padding: it overwrites **real speech** with invented text that reads fluently.
+  `srtfix.py` also fails loudly if any such phrase survives.
+- **VAD on** — dead air (breaks, writing on the board) is where the canned
+  filler appears. VAD alone makes raw cue timing *worse*, which is why it looked
+  wrong at first — but `srtfix.py` re-times every cue from the silence map
+  afterwards, so that cost is undone and only the benefit remains. Measured over
+  70 min of lecture: 2 hallucinations → 0, and *more* speech recovered
+  (7595 → 7718 words). `LECTURE_VAD=0` disables it.
+- **Prompt carried every window** (`--carry-initial-prompt`) is what keeps
+  technical spelling stable across hours of audio.
+- **No `-ml`/`-sow`/`-dtw`** — these look like the obvious way to get
+  subtitle-sized cues, but they alter decoding and measurably degrade the text.
+  Cue splitting is done afterwards, in `srtfix.py`, where it is free.
+
+### `srtfix.py`
+
+Turns whisper's 30 s / 300-character segments into subtitles:
+
+- splits cues to ≤ 84 chars (2 × 42) on word boundaries;
+- places each cue on the audio's **speech** timeline (from ffmpeg
+  `silencedetect`), so text never drifts across a pause, and a cue never starts
+  inside one;
+- **holds each line until the next one needs the screen** — the speaker pauses
+  mid-sentence, and cues timed to speech alone vanish mid-thought. On a 10 min
+  sample this cut blank screen from 201 s to 4.5 s. `HOLD = False` reverts;
+  `HOLD_MAX` caps very long holds;
+- applies the glossary, then runs the hallucination gate.
+
+`python3 srtfix.py --demo` runs its self-checks.
+
+**Speed:** ≈ 20× realtime on an M-series Mac (a 70 min lecture transcribes in
+≈ 3 min); the video render is usually the slower half.
+
+**Caveat:** the gate catches whisper's *known* canned phrases. A hallucination
+phrased like plausible subject matter would pass it — spot-check long runs.
