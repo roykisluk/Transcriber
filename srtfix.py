@@ -171,6 +171,44 @@ def check_hallucinations(cues):
     return hits
 
 
+def write_raw(cues, path):
+    """Write cues verbatim (no re-wrapping) -- for intermediate whisper SRTs."""
+    with open(path, "w", encoding="utf-8") as f:
+        for i, (a, z, t) in enumerate(cues, 1):
+            f.write(f"{i}\n{ts(a)} --> {ts(z)}\n{t}\n\n")
+
+
+def splice(base, win, offset, s, e, out):
+    """Replace base cues overlapping [s,e] with win's cues (shifted by offset).
+
+    A hallucination is an artifact of where whisper's 30 s windows fall, so
+    re-decoding the same audio on a different boundary recovers the real speech.
+    """
+    add = [(a + offset, z + offset, t) for a, z, t in parse_srt(win)
+           if a + offset < e and z + offset > s]
+    if not add:
+        return 0
+    keep = [c for c in parse_srt(base) if not (c[0] < e and c[1] > s)]
+    merged = sorted(keep + add, key=lambda c: c[0])
+    # Inserted cues spill a little past the flagged span, so the base cue just
+    # outside it can repeat text the window already carries -- a visible stutter
+    # at each seam. Widening the cleared range instead would drop base cues the
+    # window does not cover, losing speech, so de-duplicate here and keep the
+    # fuller wording of the two.
+    out_cues = []
+    for c in merged:
+        if out_cues:
+            prev = out_cues[-1][2].strip()
+            cur = c[2].strip()
+            if cur and prev and (cur in prev or prev in cur):
+                if len(cur) > len(prev):
+                    out_cues[-1] = c
+                continue
+        out_cues.append(c)
+    write_raw(out_cues, out)
+    return len(add)
+
+
 def ts(t):
     h, r = divmod(max(t, 0), 3600); m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d},{int(round((s - int(s))*1000)):03d}"
@@ -204,12 +242,40 @@ def demo():
     assert at_end([(0, 2), (8, 12)], 3.0) == 9.0, "speech-time mapping"
     assert at_end([(0, 2), (8, 12)], 2.0) == 2.0, "end may rest on a boundary"
     assert at_start([(0, 2), (8, 12)], 2.0) == 8.0, "start skips the pause"
+
+    # splice: a re-decoded window replaces the bad span, and its spill past the
+    # span must not leave the neighbouring base cue behind as a duplicate
+    import tempfile, os
+    d = tempfile.mkdtemp()
+    b_, w_, o_ = (os.path.join(d, n) for n in ("b.srt", "w.srt", "o.srt"))
+    # window is padded well past the span (as in the real pipeline) and its last
+    # cue spills past `e`, repeating text the base also has just outside it
+    # the recovered cue spills past `e` and repeats what the next base cue says
+    # -- exactly the stutter seen at 36:05 and 61:38 in a real lecture
+    write_raw([(0, 10, "good before"), (10, 20, "BAD FILLER"), (21, 30, "the tail")], b_)
+    write_raw([(0, 12, "real speech and then the tail")], w_)   # window starts at 10
+    splice(b_, w_, 10.0, 10.0, 20.0, o_)
+    got = [t for _, _, t in parse_srt(o_)]
+    assert "BAD FILLER" not in got, "hallucinated cue survived the splice"
+    assert "good before" in got, "splice clobbered untouched audio"
+    assert sum("the tail" in t for t in got) == 1, f"seam duplicated: {got}"
+    assert "real speech and then the tail" in got, f"kept the poorer wording: {got}"
     print("srtfix self-check ok")
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--demo":
         demo(); sys.exit()
+    if sys.argv[1] == "--find":                 # print "start end" per bad cue
+        for a, z, t in parse_srt(sys.argv[2]):
+            if HALLUCINATION.search(t):
+                print(f"{a:.3f} {z:.3f}")
+        sys.exit()
+    if sys.argv[1] == "--splice":               # base win offset s e out
+        b, w, off, s, e, out = sys.argv[2:8]
+        n = splice(b, w, float(off), float(s), float(e), out)
+        print(f"spliced {n} cue(s) over {float(s):.1f}-{float(e):.1f}s")
+        sys.exit()
     argv = sys.argv[1:]
     shift = 0.0
     if "--shift" in argv:                       # put cues back on the ORIGINAL

@@ -124,6 +124,27 @@ whisper-cli -m "$MODEL" -f "$tmp/a.wav" -l en -t "$THREADS" -np \
   "${vad_args[@]}" "${prompt_args[@]}" -osrt -otxt -of "$tmp/a" >"$tmp/whisper.log" 2>&1 || {
     print -u2 "lecture-subtitles: whisper failed; see $tmp/whisper.log"; cp "$tmp/whisper.log" ./ 2>/dev/null; exit 1 }
 
+# Repair pass. A canned-filler hallucination is an artifact of where whisper's
+# 30 s windows land, so re-decoding the same audio on a different boundary
+# recovers the real speech (verified: content came back verbatim). Vary the pad
+# each round so the alignment actually changes -- decoding is deterministic, so
+# retrying an identical window would reproduce the identical hallucination.
+for pad in 60 35 95; do
+  spans=$(python3 "$SRTFIX" --find "$tmp/a.srt")
+  [[ -z $spans ]] && break
+  print "      repairing $(print -r -- "$spans" | grep -c .) hallucinated span(s), pad=${pad}s"
+  print -r -- "$spans" | while read -r hs he; do
+    ws=$(python3 -c "import sys;print(max(0.0,float(sys.argv[1])-float(sys.argv[2])))" "$hs" "$pad")
+    wd=$(python3 -c "import sys;print(float(sys.argv[1])-float(sys.argv[2])+2*float(sys.argv[3]))" "$he" "$hs" "$pad")
+    ffmpeg -v error -ss "$ws" -t "$wd" -i "$tmp/a.wav" -c copy -y "$tmp/w.wav" || continue
+    whisper-cli -m "$MODEL" -f "$tmp/w.wav" -l en -t "$THREADS" -np \
+      -bs 8 -bo 8 -et 2.6 -lpt -1.0 -mc 192 -sns \
+      "${vad_args[@]}" "${prompt_args[@]}" -osrt -of "$tmp/w" >>"$tmp/whisper.log" 2>&1 || continue
+    python3 "$SRTFIX" --splice "$tmp/a.srt" "$tmp/w.srt" "$ws" "$hs" "$he" "$tmp/a2.srt" \
+      && mv "$tmp/a2.srt" "$tmp/a.srt"
+  done
+done
+
 print "[3/5] silence map + re-timing"
 ffmpeg -v info -i "$tmp/a.wav" -af "silencedetect=noise=-35dB:d=0.35" -f null - 2>"$tmp/sil.txt"
 gloss=(); [[ -f $GLOSSARY ]] && gloss=("$GLOSSARY")
