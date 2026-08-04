@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""notion-append-transcript <page-url-or-id> <transcript.txt> [--skip N]
+
+Appends a transcript to an existing Notion page through the Notion REST API.
+The text goes straight from the file to Notion — no model in the path, so it
+cannot be paraphrased, truncated, or take ten minutes.
+
+Byte-exact except that a single line longer than 2000 chars (Notion's rich-text
+limit) is wrapped across paragraphs.
+
+Token comes from the keychain item created with:
+  security add-generic-password -a notion-meeting -s notion-api-token -w
+
+--skip N resumes after a partial failure: skips the first N blocks.
+--self-check runs the chunker's assertions and exits.
+"""
+import json
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API = "https://api.notion.com/v1/blocks/{}/children"
+VERSION = "2022-06-28"
+MAX_CHARS = 2000   # Notion rich_text content limit
+MAX_BLOCKS = 100   # Notion children-per-request limit
+
+
+def pack(text, limit=MAX_CHARS):
+    """Group transcript lines into paragraphs of <= limit chars, keeping newlines.
+
+    Packing rather than one-block-per-line keeps a 70 KB transcript to ~40
+    blocks instead of ~1500, i.e. one PATCH instead of fifteen.
+    """
+    blocks, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:          # rare: one overlong utterance
+            if cur:
+                blocks.append(cur)
+                cur = ""
+            blocks.append(line[:limit])
+            line = line[limit:]
+        if not cur:
+            cur = line
+        elif len(cur) + 1 + len(line) <= limit:
+            cur += "\n" + line
+        else:
+            blocks.append(cur)
+            cur = line
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def paragraph(text):
+    return {"object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+
+def heading(text):
+    return {"object": "block", "type": "heading_3",
+            "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+
+def build(text):
+    """The full payload main() sends — kept in one place so --self-check covers it."""
+    return [heading("Transcript")] + [paragraph(p) for p in pack(text)]
+
+
+def token_from_keychain():
+    r = subprocess.run(
+        ["security", "find-generic-password", "-a", "notion-meeting",
+         "-s", "notion-api-token", "-w"],
+        capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        sys.exit("notion-append-transcript: no token in keychain. Store it with:\n"
+                 "  security add-generic-password -a notion-meeting "
+                 "-s notion-api-token -w")
+    return r.stdout.strip()
+
+
+def page_id(ref):
+    """Page id from a slug URL, a plain URL, a dashed UUID, or a bare id.
+
+    Not a loose 32-hex search: in '.../API-append-test-delete-me-<id>' the 'e'
+    of 'me' is itself a hex digit, so stripping dashes first matches one char
+    off and yields a valid-looking id that does not exist.
+    """
+    seg = ref.split("?")[0].rstrip("/").split("/")[-1]
+    for cand in (seg.split("-")[-1], seg.replace("-", "")):
+        if re.fullmatch(r"[0-9a-fA-F]{32}", cand):
+            return cand
+    sys.exit(f"notion-append-transcript: no page id in: {ref}")
+
+
+def send(pid, blocks, token):
+    req = urllib.request.Request(
+        API.format(pid), method="PATCH",
+        data=json.dumps({"children": blocks}).encode(),
+        headers={"Authorization": f"Bearer {token}",
+                 "Notion-Version": VERSION,
+                 "Content-Type": "application/json"})
+    # ponytail: one retry covers a rate-limit blip; add backoff if it ever loops.
+    for attempt in (1, 2):
+        try:
+            urllib.request.urlopen(req, timeout=60).read()
+            return
+        except urllib.error.HTTPError as e:
+            if attempt == 1 and e.code in (409, 429, 500, 502, 503, 504):
+                time.sleep(int(e.headers.get("Retry-After") or 3))
+                continue
+            sys.stderr.write(e.read().decode(errors="replace") + "\n")
+            raise
+
+
+def self_check():
+    plain = "[Me] hello\n[Them] hi there\n[Me] ok"
+    assert "\n".join(pack(plain)) == plain
+    many = "\n".join(f"[Me] line {i} " + "x" * 100 for i in range(200))
+    got = pack(many)
+    assert all(len(b) <= MAX_CHARS for b in got), "block over the 2000-char limit"
+    assert "\n".join(got) == many, "packing lost or reordered text"
+    assert len(got) < many.count("\n"), "packing did not reduce block count"
+    long_line = "y" * 5000
+    got = pack(long_line)
+    assert all(len(b) <= MAX_CHARS for b in got)
+    assert "".join(got) == long_line, "overlong line was corrupted"
+    # The payload itself: Notion 400s on anything that is not a block object.
+    payload = build(plain)
+    assert all(isinstance(b, dict) and b.get("object") == "block" for b in payload), \
+        "payload contains something that is not a block object"
+    assert payload[0]["type"] == "heading_3"
+    assert [b["paragraph"]["rich_text"][0]["text"]["content"] for b in payload[1:]] == pack(plain)
+    # Id parsing: the slug form is what notion-meeting actually passes.
+    want = "3b2855af144381d5a857fc66476df712"
+    for ref in ("https://app.notion.com/p/API-append-test-delete-me-" + want,
+                "https://app.notion.com/" + want,
+                "3b2855af-1443-81d5-a857-fc66476df712",
+                want):
+        assert page_id(ref) == want, f"bad id from {ref}: {page_id(ref)}"
+    print("self-check ok")
+
+
+def main(argv):
+    if "--self-check" in argv:
+        return self_check()
+    skip = 0
+    if "--skip" in argv:
+        i = argv.index("--skip")
+        skip = int(argv[i + 1])
+        del argv[i:i + 2]
+    if len(argv) != 2:
+        sys.exit(__doc__)
+    ref, path = argv
+
+    text = open(path, encoding="utf-8").read().strip()
+    if not text:
+        sys.exit(f"notion-append-transcript: transcript is empty: {path}")
+
+    blocks = build(text)
+    pid, token = page_id(ref), token_from_keychain()
+    batches = [blocks[i:i + MAX_BLOCKS] for i in range(skip, len(blocks), MAX_BLOCKS)]
+
+    done = skip
+    for batch in batches:
+        try:
+            send(pid, batch, token)
+        except Exception as e:
+            print(f"notion-append-transcript: failed after {done}/{len(blocks)} "
+                  f"blocks: {e}", file=sys.stderr)
+            print(f"Retry with:  {sys.argv[0]} \"{ref}\" \"{path}\" --skip {done}",
+                  file=sys.stderr)
+            return 1
+        done += len(batch)
+        time.sleep(0.34)   # Notion allows ~3 req/s
+    print(f"Transcript: appended {len(blocks)} blocks")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
