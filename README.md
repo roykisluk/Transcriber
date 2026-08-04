@@ -12,6 +12,22 @@ end) and `[Them]` (the Zoom call / far end). Silence gaps are dropped with
 Voice Activity Detection (VAD), which kills whisper's habit of hallucinating a
 stray word into a quiet stretch.
 
+## The other two tools in here
+
+The root of this repo is the Hebrew meeting pipeline above. Two sibling tools,
+merged in on 2026-08-04 (histories preserved), handle the cases it doesn't:
+
+| Dir | Tool | Reach for it when |
+|---|---|---|
+| — (root) | `record` / `transcribe` / `notion-meeting` | **Hebrew**, a live meeting you record yourself, speaker labels, filed to Notion. whisper.cpp + ivrit.ai. |
+| [`econ/`](econ/) | `transcribe.py` | **English** econ seminars and lectures you already have a file of. mlx-whisper on Metal, econometrics vocabulary prompt, SRT/VTT/JSON out. |
+| [`enhance/`](enhance/) | `enhance_audio.py` | The recording sounds bad — a YouTube rip or a far-mic Zoom. Run **before** either transcriber. |
+
+They stay separate programs on purpose: different models (whisper.cpp vs
+mlx-whisper), different languages, different inputs. `enhance/` is the shared
+pre-step for both. Each dir has its own README and, where it needs them, its own
+`requirements.txt`.
+
 ## Fresh-machine setup
 
 ```sh

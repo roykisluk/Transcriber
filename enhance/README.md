@@ -44,31 +44,19 @@ Tested on Apple M1 Max (32 GB). A 1-hour seminar takes roughly 10–15 minutes.
 
 ---
 
-### `transcribe.py` — Whisper transcription to SRT
+### Transcription — moved to [`../econ/`](../econ/)
 
-Transcribes a video or audio file to an SRT subtitle file using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper large-v3).
-
-#### Requirements
-
-```bash
-pip install faster-whisper
-```
-
-#### Usage
-
-```bash
-# Saves input.srt next to the video
-python transcribe.py input.webm
-
-# Explicit output path
-python transcribe.py input.webm output.srt
-```
-
-Works best on audio that has already been enhanced with `enhance_audio.py`.
+This README used to document a `transcribe.py` here (faster-whisper → SRT). That
+script left, grew an mlx-whisper/Metal backend and an econometrics prompt, and now
+lives at [`../econ/transcribe.py`](../econ/transcribe.py) — faster-whisper is still
+in there as the CPU fallback.
 
 ## Typical workflow
 
 ```bash
-python enhance_audio.py lecture.webm
-python transcribe.py lecture_enhanced.webm
+python enhance_audio.py lecture.webm            # this dir
+python ../econ/transcribe.py lecture_enhanced.webm --format srt
 ```
+
+For a Hebrew meeting you recorded yourself, use the repo root's `record` /
+`transcribe` instead — see the [top-level README](../README.md).
