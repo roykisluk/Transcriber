@@ -13,9 +13,16 @@
 # through to plain `transcribe` — old single-track recordings keep working.
 set -uo pipefail
 
+# macOS awk throws "towc: multibyte conversion failure" on Hebrew .srt lines
+# under a non-UTF-8 locale and mangles them; the merge below is all awk.
+export LC_ALL=${LC_ALL:-en_US.UTF-8}
+
 # ${0:A:h} = repo dir even via a ~/bin symlink; use the sibling transcribe so
 # the model/VAD/prompt resolution stays version-consistent with this helper.
 TRANSCRIBE=${0:A:h}/transcribe
+
+# Segment cap for the NEAR (mic) side only — see the two transcribe calls below.
+NEAR_MAXLEN=${TRANSCRIBE_NEAR_MAXLEN:-60}
 
 if (( $# != 1 )); then
   print -u2 "usage: transcribe-meeting <recording.m4a>"
@@ -51,9 +58,16 @@ if ! ffmpeg -nostdin -hide_banner -loglevel error -y -i "$input" \
   exit 1
 fi
 
-# whisper writes near.srt / far.srt beside each input (in $tmp).
-"$TRANSCRIBE" "$tmp/near.wav" "$tmp/far.wav" || {
-  print -u2 "transcribe-meeting: transcription failed: $input"; exit 1; }
+# whisper writes near.srt / far.srt beside each input (in $tmp). Two calls, not
+# one, because only the near side wants segment splitting: your mic is mostly
+# silence, so with VAD whisper fuses minutes of separate replies into one segment
+# stamped at the first reply's time and the merge below can't interleave them.
+# The far side is continuous speech and segments fine on its own — capping it
+# there only chops sentences mid-phrase for no gain. Measured 2026-08-11.
+TRANSCRIBE_MAXLEN=$NEAR_MAXLEN "$TRANSCRIBE" "$tmp/near.wav" || {
+  print -u2 "transcribe-meeting: transcription failed (near): $input"; exit 1; }
+TRANSCRIBE_MAXLEN=0 "$TRANSCRIBE" "$tmp/far.wav" || {
+  print -u2 "transcribe-meeting: transcription failed (far): $input"; exit 1; }
 
 # One awk pass per side: emit "<zero-padded start seconds>\t<label> <text>".
 # Fixed-width key => lexical sort == time order; empty/missing side emits nothing.

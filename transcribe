@@ -1,13 +1,27 @@
 #!/usr/bin/env zsh
 # transcribe <file> [more files...]
-# Converts each input to 16 kHz mono wav and transcribes it to Hebrew with
-# whisper.cpp, writing <input-without-ext>.txt and .srt next to the input.
+# Converts each input to 16 kHz mono wav and transcribes it with whisper.cpp,
+# writing <input-without-ext>.txt and .srt next to the input. Hebrew by default;
+# TRANSCRIBE_LANG=en (or any whisper code) for other languages.
 # Override the model with TRANSCRIBE_MODEL=/path/to/model.bin.
 set -uo pipefail
 
 # ${0:A} resolves symlinks, so this points at the repo dir even when this
 # script is invoked via a ~/bin symlink (the model lives beside it there).
-MODEL=${TRANSCRIBE_MODEL:-"${0:A:h}/ggml-model-whisper-custom.bin"}
+# Language whisper is told the audio is in. Default Hebrew (the usual case);
+# TRANSCRIBE_LANG=en for an English meeting. Propagates through record /
+# transcribe-meeting since they're child processes: `TRANSCRIBE_LANG=en record`.
+LANG_CODE=${TRANSCRIBE_LANG:-he}
+
+# Model follows the language: the custom model is a Hebrew fine-tune and emits
+# Hebrew no matter what -l says (verified 2026-08-11), so anything non-Hebrew
+# has to fall back to stock multilingual large-v3. TRANSCRIBE_MODEL still wins.
+if [[ $LANG_CODE == he ]]; then
+  DEFAULT_MODEL="${0:A:h}/ggml-model-whisper-custom.bin"
+else
+  DEFAULT_MODEL="${0:A:h}/ggml-large-v3.bin"
+fi
+MODEL=${TRANSCRIBE_MODEL:-$DEFAULT_MODEL}
 VAD_MODEL=${TRANSCRIBE_VAD_MODEL:-"${0:A:h}/ggml-silero-v5.1.2.bin"}
 
 if (( $# == 0 )); then
@@ -39,6 +53,23 @@ fi
 prompt_args=()
 [[ -n ${TRANSCRIBE_PROMPT:-} ]] && prompt_args=(--prompt "$TRANSCRIBE_PROMPT")
 
+# Cap segment length in characters. Off by default (whole utterances read better).
+# transcribe-meeting turns it on: with VAD, a sparse channel fuses minutes of
+# separate replies into one segment stamped at the first one's time, which wrecks
+# the [Me]/[Them] merge. Splitting restores per-reply timestamps. Costs no extra
+# inference time — it re-segments already-decoded output. Measured 2026-08-11.
+maxlen_args=()
+(( ${TRANSCRIBE_MAXLEN:-0} > 0 )) && maxlen_args=(-ml "$TRANSCRIBE_MAXLEN" -sow)
+
+# Bound the decoder's text-context window. whisper's default (-1 = unlimited)
+# lets a repeated phrase feed itself: on the 2026-08-11 meeting it emitted
+# "And then you have to pay for it." 60x across 2.5 minutes of ordinary speech
+# (LOUDER than the rest of the call — not silence), and that content was simply
+# gone from the transcript and the summary. -mc 0 stops the loop but strips
+# punctuation continuity (6.7 marks/100 words vs 18.3). 64 tokens keeps both:
+# loop gone, ~230 words recovered, punctuation 17.6. Measured 2026-08-11.
+MAXCTX=${TRANSCRIBE_MAXCTX:-64}
+
 tmpdir=""
 cleanup() { [[ -n $tmpdir && -d $tmpdir ]] && rm -rf "$tmpdir"; }
 trap cleanup EXIT INT TERM
@@ -62,7 +93,8 @@ for input in "$@"; do
     failed=1
     continue
   fi
-  if ! whisper-cli -m "$MODEL" -l he "${vad_args[@]}" "${prompt_args[@]}" -otxt -osrt -of "$base" -f "$wav"; then
+  if ! whisper-cli -m "$MODEL" -l "$LANG_CODE" "${vad_args[@]}" "${prompt_args[@]}" \
+       "${maxlen_args[@]}" -mc "$MAXCTX" -otxt -osrt -of "$base" -f "$wav"; then
     print -u2 "transcribe: whisper-cli failed, skipping: $input"
     rm -rf "$tmpdir"; tmpdir=""
     failed=1

@@ -53,10 +53,42 @@ print "Recording 'Meeting Input' (index $idx) -> $out"
 print "Press Ctrl-C ONCE to stop (repeated presses hard-kill ffmpeg)."
 # Fragmented mp4 (empty_moov + 5s fragments): file stays readable even if
 # ffmpeg is hard-killed (e.g. repeated Ctrl-C) — at most the last ~5s are lost.
-ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
+# Backgrounded so the language prompt below costs ZERO audio: capture is already
+# running while it waits. -nostdin so ffmpeg doesn't swallow that keypress.
+ffmpeg -nostdin -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
   -c:a aac -b:a 96k \
-  -movflags +empty_moov+default_base_moof -frag_duration 5000000 "$out" || true
-restore   # explicit: Ctrl-C already restored via the INT trap, but a natural/`q` stop hasn't
+  -movflags +empty_moov+default_base_moof -frag_duration 5000000 "$out" &
+ff_pid=$!
+
+# zsh without job control does NOT forward the terminal's SIGINT to a background
+# job, so Ctrl-C has to be relayed by hand. SIGINT (never KILL) so ffmpeg
+# finalizes the file on the way out.
+stop() { kill -INT "$ff_pid" 2>/dev/null || true; }
+trap 'stop; restore' INT TERM
+
+# Language, asked WHILE recording — it isn't needed until transcription (after
+# Ctrl-C), so a slow answer costs no audio. Default Hebrew on N / silence / no tty.
+# The 5s timeout is enforced by the tty driver (min 0 time 50 = return after at
+# most 5s with whatever's there), NOT by `read -t`: zsh's `read -q -t5` never
+# times out at all, and `read -k1 -t5` proved unreliable here. The driver can't
+# hang, so a missed keypress can never strand a recording. Tested 2026-08-11.
+lang=he
+if [[ -t 0 ]]; then
+  stty_saved=$(stty -g 2>/dev/null || true)
+  if [[ -n $stty_saved ]] && stty -icanon min 0 time 50 2>/dev/null; then
+    print -n "Meeting in English? [y/N] (5s, default Hebrew) "
+    ans=$(dd bs=1 count=1 2>/dev/null)
+    stty "$stty_saved" 2>/dev/null || true
+    [[ $ans == [yY] ]] && lang=en
+    print ""
+  fi
+fi
+print "Language: $lang"
+export TRANSCRIBE_LANG=$lang
+
+# `wait` is interrupted by the trap, so loop until ffmpeg is actually gone.
+while kill -0 "$ff_pid" 2>/dev/null; do wait "$ff_pid" 2>/dev/null || true; done
+restore   # explicit: Ctrl-C already restored via the INT trap, but a natural stop hasn't
 
 print ""
 if [[ ! -f $out ]]; then
