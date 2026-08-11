@@ -50,23 +50,70 @@ def extract_audio(video_path: Path, tmp_dir: Path) -> Path:
 # Transcription backends
 # ---------------------------------------------------------------------------
 
+def drop_degenerate_segments(segments: list, verbose: bool = False) -> list:
+    """Remove segments that are a single token looped, e.g. "sca sca sca sca ...".
+
+    Whisper does this when it is decoding something that isn't speech — in practice
+    almost always the silent lead-in before a webinar starts, which lands in the very
+    first cue and reads as gibberish at the top of every transcript. A real sentence
+    never repeats one token over half its length at this kind of segment size.
+    """
+    kept = []
+    for seg in segments:
+        text = seg["text"].strip()
+        words = text.split()
+        reason = None
+
+        if len(words) >= 12:
+            top = max(set(words), key=words.count)
+            if words.count(top) / len(words) > 0.5:
+                reason = f"{top!r} x{words.count(top)}"
+
+        # The loop is not always space-separated: whisper also emits one long run-on
+        # token ("termintermintermin..."). Look for a short repeating unit.
+        if reason is None and len(text) >= 40 and " " not in text[:40]:
+            for period in range(1, len(text) // 4 + 1):
+                if text.startswith((text[:period] * (len(text) // period + 1))[:len(text)]):
+                    reason = f"{text[:period]!r} repeated"
+                    break
+
+        if reason:
+            if verbose:
+                print(f"    [dropped repetition loop at {seg['start']:.1f}s: {reason}]")
+            continue
+        kept.append(seg)
+    return kept
+
+
+def _assemble(segments: list, verbose: bool = False) -> dict:
+    segments = drop_degenerate_segments(segments, verbose)
+    return {"text": " ".join(s["text"] for s in segments).strip(), "segments": segments}
+
+
 def transcribe_mlx(audio_path: Path, model: str, language: str, initial_prompt: str, verbose: bool) -> dict:
     import mlx_whisper
     print(f"  Transcribing with mlx-whisper on Apple Silicon GPU...")
     print(f"  Model: {model}")
+    # Seminar recordings open with dead air while people join. Whisper decodes that
+    # silence into text — either a looped token or, when --prompt is used, a mangled
+    # echo of the prompt itself ("Paul Goldsmith-Pinkhampered Welcome back...").
+    # hallucination_silence_threshold skips speechless stretches and removes both;
+    # it needs word_timestamps, which costs roughly 2x runtime and is worth it.
     result = mlx_whisper.transcribe(
         str(audio_path),
         path_or_hf_repo=model,
         language=None if language == "auto" else language,
         initial_prompt=initial_prompt or None,
         verbose=verbose,
-        word_timestamps=False,
+        word_timestamps=True,
+        condition_on_previous_text=False,
+        hallucination_silence_threshold=2.0,
     )
     segments = [
         {"start": s["start"], "end": s["end"], "text": s["text"].strip()}
         for s in result.get("segments", [])
     ]
-    return {"text": result.get("text", "").strip(), "segments": segments}
+    return _assemble(segments, verbose)
 
 
 def _map_model_size(model: str) -> str:
@@ -91,14 +138,12 @@ def transcribe_faster_whisper(audio_path: Path, model: str, language: str, initi
         vad_filter=True,
     )
     segments = []
-    full_texts = []
     for seg in segments_gen:
         text = seg.text.strip()
         segments.append({"start": seg.start, "end": seg.end, "text": text})
-        full_texts.append(text)
         if verbose:
             print(f"    [{seg.start:.1f}s → {seg.end:.1f}s] {text}")
-    return {"text": " ".join(full_texts), "segments": segments}
+    return _assemble(segments, verbose)
 
 
 # ---------------------------------------------------------------------------
@@ -309,5 +354,28 @@ def main():
     print("\nAll done.")
 
 
+def _self_check():
+    """python transcribe.py --self-check — verifies the repetition gate."""
+    loop = {"start": 0.0, "end": 30.0, "text": "sca " * 60}
+    real = {"start": 30.0, "end": 34.0, "text":
+            "So the key distinction here is that Claude Code reads your local filesystem."}
+    # A real sentence with a common word repeated normally must survive.
+    the = {"start": 34.0, "end": 38.0, "text":
+           "the data and the code and the paper and the tables and the figures and the notes"}
+    short = {"start": 38.0, "end": 39.0, "text": "no no no"}  # under the 12-word floor
+    runon = {"start": 39.0, "end": 45.0, "text": "termin" * 20}   # loop with no spaces
+    # A long single word that is NOT a repetition must survive.
+    longword = {"start": 45.0, "end": 47.0, "text": "counterfactuals"}
+
+    kept = drop_degenerate_segments([loop, real, the, short, runon, longword])
+    assert kept == [real, the, short, longword], kept
+    assert drop_degenerate_segments([]) == []
+    assert _assemble([loop, real])["text"] == real["text"]
+    print("ok")
+
+
 if __name__ == "__main__":
-    main()
+    if "--self-check" in sys.argv:
+        _self_check()
+    else:
+        main()
