@@ -103,3 +103,46 @@
 - **Open:** `transcribe-meeting`'s awk merge printed `towc: multibyte conversion failure`
   on a Hebrew `.srt` line — macOS awk under a non-UTF-8 locale. Ran the retry with
   `LC_ALL=en_US.UTF-8`. If it recurs, set the locale inside `transcribe-meeting`.
+
+### 2026-09-18 — `lecture-subtitles` on a clean-audio physics course (Susskind, 10×~100 min)
+Ran the script outside its design case: clear American English, not heavily accented.
+Three knobs added, all defaulting to previous behaviour. 17.4 h → 10 sidecar `.srt`.
+
+- **The default prompt is a footgun for any other subject.** `lecture-prompt.txt` is
+  International Macroeconomics and `--carry-initial-prompt` re-injects it into every
+  30 s window. Running on physics without `-p` biases every window toward Calvo pricing
+  and the Solow residual. The `-p`/`-g` defaults should arguably be per-course files.
+- **`LECTURE_MAXLEN` (new, default 0 = old behaviour).** whisper's `-ml` default is 0 =
+  uncapped. On fluent continuous speech that gives 17 s / 217-char cues — fine as a
+  transcript, unusable as subtitles. `-ml 90 -sow` → max 84 chars, median 3.5 s.
+- **`LECTURE_BEAM` (new, default 8 = old behaviour).** Beam 8 is tuned for accented
+  speech. On clean audio beam 2 was ~16x realtime vs ~9x, i.e. ~6 min per 110 min
+  lecture, with no measurable quality loss (cue density identical, 17-18 cues/min).
+- **whisper was never niced** — `NICE` was applied only to the x264 encode. Fixed.
+  But note it barely matters: whisper.cpp runs on the **Metal GPU** and sits at ~15%
+  CPU, so `nice` does not reduce heat. **Beam width is the only real thermal lever.**
+
+#### The `-mc 192` header comment is probably wrong, and the collapse is cosmetic
+The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this course:
+- The collapse is **real and progressive**: no-leading-capital ran 48% → 98% → 99.6%
+  across the thirds of one 89 min lecture, *at* `-mc 192`, so 192 does not prevent it.
+- It is **not** caused by the prompt's style. Four variants on identical minute-60 audio
+  (comma-list prompt, prose prompt, prose without carry, no prompt at all) all gave
+  33-40%. Disproven.
+- Cause is **accumulated context feeding forward**: a *fresh* run on minute-60 audio is
+  clean (39%); the *full* run arriving at that same audio is collapsed (98%).
+- **It costs almost nothing.** Word-level similarity, collapsed vs fresh on the same
+  audio: **95.2%**, residual is window-boundary alignment, not wrong words. Only case
+  and punctuation are lost. Untested: whether `-mc 0` removes it — the run was cancelled
+  as irrelevant once Roy said he doesn't care about case/punctuation.
+- **~35% no-capital is the healthy floor** once `-ml`/`-sow` is on, since cues split
+  mid-sentence. Measuring against 0% invents a defect.
+- **Method lesson:** a 3 min benchmark cannot see a failure that develops over 30 min.
+  I concluded twice from slices and was wrong twice. Validate on one full lecture.
+
+#### Gotcha repeat
+- `print "--- cooling ${x}s ---"` → `print:15: bad option: -`. **Already in this log**
+  (2026-08-11) and I hit it again. Non-fatal without `set -e`, so the `sleep` after it
+  still ran — but the log line vanished. Use `print -r --` or `printf`.
+- **Never edit a running zsh script.** zsh reads it incrementally from disk, so a
+  mid-run edit can corrupt the part not yet parsed. Fix after the batch exits.

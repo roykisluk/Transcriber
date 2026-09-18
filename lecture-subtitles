@@ -18,12 +18,16 @@
 #                re-encoding at all, so it is near-instant and stays cool.
 #
 # Env: LECTURE_MODEL, LECTURE_VAD_MODEL, LECTURE_VAD=0, LECTURE_PROMPT_FILE,
-#      LECTURE_GLOSSARY, LECTURE_THREADS, LECTURE_ENCODER=x264, LECTURE_NICE.
+#      LECTURE_GLOSSARY, LECTURE_THREADS, LECTURE_MAXLEN, LECTURE_BEAM,
+#      LECTURE_ENCODER=x264, LECTURE_NICE.
 #
 # Why these settings (measured on a 2.5 h accented lecture; see README):
 #   -mc 192  whisper's text context is 224 tokens, so -mc >=224 means NO cap and
 #            the transcript collapses into lowercase run-on gibberish (91% of cues,
 #            88-cue runs). 192 is the highest usable value and scored best.
+#            NOTE 2026-09-18: 192 did NOT prevent the collapse on a clean-audio
+#            course (48%->99.6% across one lecture). It is cosmetic -- 95.2% word
+#            match vs a fresh run. See CLAUDE.md before trusting this line.
 #   -sns     without it whisper replaces stretches it cannot decode with canned
 #            "thanks for watching / subscribe" filler, DESTROYING real speech.
 #   VAD      dead air (breaks, writing on the board) is where that filler appears.
@@ -40,6 +44,18 @@ VAD_MODEL=${LECTURE_VAD_MODEL:-"$here/ggml-silero-v5.1.2.bin"}
 PROMPT_FILE=${LECTURE_PROMPT_FILE:-"$here/lecture-prompt.txt"}
 GLOSSARY=${LECTURE_GLOSSARY:-"$here/lecture-glossary.txt"}
 THREADS=${LECTURE_THREADS:-8}
+# Cue length. whisper's -ml default is 0 = uncapped, which on fluent continuous
+# speech yields 17 s / 200+ char cues -- a transcript, not subtitles. Set
+# LECTURE_MAXLEN to a character cap (90 reads well) to split cues; -sow keeps the
+# split on word boundaries. Default stays 0 so existing behaviour is unchanged.
+MAXLEN=${LECTURE_MAXLEN:-0}
+len_args=()
+(( MAXLEN > 0 )) && len_args=(-ml "$MAXLEN" -sow)
+# Thermal knob. Beam 8 is tuned for heavily accented speech; on clear audio it
+# costs ~4x the decode work of beam 2 for little gain. Lower LECTURE_BEAM when
+# the machine runs hot. Decoding is GPU (Metal) work, so nice(1) barely touches
+# it -- beam width is the lever that actually reduces heat.
+BEAM=${LECTURE_BEAM:-8}
 # Rendering, not transcription, is what cooks the machine: whisper runs on the
 # Metal GPU (~40% CPU), but libx264 pegs every core. Capping its threads costs
 # ~2x wall time and NOTHING in quality or file size (measured: 1503% -> 333% CPU,
@@ -68,7 +84,7 @@ while getopts "s:t:S:p:g:o:nbh" opt; do
     o) out=$OPTARG ;;
     n) novideo=1 ;;
     b) burn=1 ;;
-    h) sed -n '2,31p' "${0:A}"; exit 0 ;;
+    h) sed -n '2,38p' "${0:A}"; exit 0 ;;
     *) print -u2 "see: lecture-subtitles -h"; exit 2 ;;
   esac
 done
@@ -118,9 +134,9 @@ if [[ ${LECTURE_VAD:-1} != 0 ]]; then
   fi
 fi
 
-print "[2/5] transcribing (large-v3, beam 8, -mc 192, -sns${vad_args:+, VAD})"
-whisper-cli -m "$MODEL" -f "$tmp/a.wav" -l en -t "$THREADS" -np \
-  -bs 8 -bo 8 -et 2.6 -lpt -1.0 -mc 192 -sns \
+print "[2/5] transcribing (large-v3, beam $BEAM, -mc 192, -sns${vad_args:+, VAD})"
+"${NICE[@]}" whisper-cli -m "$MODEL" -f "$tmp/a.wav" -l en -t "$THREADS" -np \
+  -bs "$BEAM" -bo "$BEAM" -et 2.6 -lpt -1.0 -mc 192 -sns "${len_args[@]}" \
   "${vad_args[@]}" "${prompt_args[@]}" -osrt -otxt -of "$tmp/a" >"$tmp/whisper.log" 2>&1 || {
     print -u2 "lecture-subtitles: whisper failed; see $tmp/whisper.log"; cp "$tmp/whisper.log" ./ 2>/dev/null; exit 1 }
 
@@ -137,8 +153,8 @@ for pad in 60 35 95; do
     ws=$(python3 -c "import sys;print(max(0.0,float(sys.argv[1])-float(sys.argv[2])))" "$hs" "$pad")
     wd=$(python3 -c "import sys;print(float(sys.argv[1])-float(sys.argv[2])+2*float(sys.argv[3]))" "$he" "$hs" "$pad")
     ffmpeg -v error -ss "$ws" -t "$wd" -i "$tmp/a.wav" -c copy -y "$tmp/w.wav" || continue
-    whisper-cli -m "$MODEL" -f "$tmp/w.wav" -l en -t "$THREADS" -np \
-      -bs 8 -bo 8 -et 2.6 -lpt -1.0 -mc 192 -sns \
+    "${NICE[@]}" whisper-cli -m "$MODEL" -f "$tmp/w.wav" -l en -t "$THREADS" -np \
+      -bs "$BEAM" -bo "$BEAM" -et 2.6 -lpt -1.0 -mc 192 -sns "${len_args[@]}" \
       "${vad_args[@]}" "${prompt_args[@]}" -osrt -of "$tmp/w" >>"$tmp/whisper.log" 2>&1 || continue
     python3 "$SRTFIX" --splice "$tmp/a.srt" "$tmp/w.srt" "$ws" "$hs" "$he" "$tmp/a2.srt" \
       && mv "$tmp/a2.srt" "$tmp/a.srt"
