@@ -146,3 +146,34 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   still ran — but the log line vanished. Use `print -r --` or `printf`.
 - **Never edit a running zsh script.** zsh reads it incrementally from disk, so a
   mid-run edit can corrupt the part not yet parsed. Fix after the batch exits.
+
+### 2026-09-22 — a garbled tail is not automatically a hallucination
+- **Symptom:** a 26 s Hebrew WhatsApp voice note ended with `בכיכר תה ביציאה השנייה,
+  אין שלום רוזנפלד` — nonsense in context (an econ argument about labor-share channels),
+  exactly the shape of the decode-loop damage from 2026-08-11.
+- **Root cause:** not whisper. It is **Waze talking over the speaker** — "בכיכר, צא
+  ביציאה השנייה" (at the roundabout, take the second exit) plus a street name. The
+  sender recorded while driving.
+- **How to tell the two apart, cheaply:** re-decode the slice **with the other model**.
+  Context carry-over is model-specific; real audio is not. The Hebrew fine-tune and
+  stock `ggml-large-v3.bin` produced the same words here (`רוזנטל`/`רוזנפלד` apart), so
+  it is signal. A loop would have decoded correctly with fresh context — that was the
+  2026-08-11 test and it is the *opposite* result.
+- **Also worth the 10 s:** compare the last `.srt` timestamp against the file duration.
+  Full coverage means nothing was dropped, which rules out the loss case without any
+  audio-level analysis. (`volumedetect` with `-ss` before `-i` silently printed nothing;
+  put `-ss`/`-t` before `-i` *and* keep `-hide_banner` off `grep`'s way, or skip it.)
+- **Lesson:** the 2026-08-11 entry says don't skim past a weird transcript line. The
+  other half of that rule: don't assume it is the decoder's fault either. Two models
+  agreeing is the discriminator.
+
+### 2026-09-22 — Notion accepts `.ogg` voice notes directly, no transcode
+- WhatsApp voice notes (`audio/ogg`, opus) upload to Notion as-is via
+  `notion-create-file-upload` → one multipart POST to `upload_url` → use the returned
+  `markdown_source` in `<audio src="file-upload://…">` inside create-pages content.
+  No `ffmpeg -i in.ogg out.m4a` step needed, and they render as playable audio blocks.
+- Upload the media **before** creating the page: the `file-upload://` source can go
+  straight into the page's markdown, so it is one create call instead of create+update.
+  Upload URLs expire in ~15 min, so don't create them and then go do something slow.
+- Still no update-in-place path for `notion-meeting` (open item above) — unrelated, but
+  the same page-per-run trap applies to anything that re-uploads.
