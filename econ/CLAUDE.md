@@ -57,3 +57,32 @@ sentence-initial English words, and eyeball what's left (~250 candidates for 65k
 Check each in context before replacing — "GAP" vs "GAAP" was a real ticker discussion
 (Gap Inc. moved from GPS to GAP), not an error. Then apply across `.srt`/`.txt`/`.vtt`/
 `.json` together, or the formats drift apart.
+
+### 2026-09-29 — model bake-off: Qwen3-ASR-1.7B beats whisper-large-v3-turbo on econ jargon
+**Question:** is there a better English model than the default `whisper-large-v3-turbo`?
+**Test:** three 5-min windows (start/middle/end, joined = 15 min) from Ben Moll's STEG
+Lecture 9 (heterogeneous agents) and Susskind's Stat Mech Lecture 1, all models fed the
+same 16 kHz WAV. No human captions exist for either video (YouTube auto only), so there
+is **no reference WER** — scoring was a jargon checklist written before looking at
+output, plus a 3-way majority vote (turbo+prompt / parakeet-tdt-0.6b-v3 /
+mlx-community/Qwen3-ASR-1.7B-8bit) read by hand.
+- **Econ: Qwen3 clearly best.** Where turbo and Parakeet agreed against Qwen3, Qwen3 was
+  usually the one that was *right*: "Dirac" (others: "direct"), "borrowing constraint"
+  (others: "boring constraint"), "Hamilton-Jacobi-Bellman" (others: "Hamilton Jackie
+  Bauman" — despite HJB/Bellman sitting in ECON_PROMPT), "Den Haan" (others: "then
+  Han"). **Lesson: majority vote punishes the best model on jargon** — read the spots.
+- **Turbo drops short phrases** (~8 in 15 min: "because time is continuous", "rather than
+  discrete time", "value function"); Parakeet and Qwen3 independently heard the same
+  words. Turbo also normalises "going to"→"gonna" and "one"→"1" — style, not errors.
+- **Physics: roughly a tie.** Susskind's vocabulary is plain (entropy, probability); every
+  model drops a few short phrases.
+- **Parakeet v3:** fastest (9 s per 15 min vs turbo ~20 s, Qwen3 ~30 s) but worst on
+  names ("heterogeneous asian", "frocker", "h" for "age"). No prompt support.
+- **ECON_PROMPT barely matters:** turbo with vs without it — same jargon hits, 5% WER apart.
+- **Dead ends:** Cohere Transcribe 03-2026 — both `beshkenadze/*-mlx-8bit` and `-fp16`
+  output multilingual gibberish under mlx-audio (needs `sentencepiece` just to load);
+  the original `CohereLabs/` repo is HF-gated. mlx-audio's `--context` is **silently
+  ignored** for Qwen3 (output identical with/without) — no vocab biasing via that runtime.
+- **Open:** Qwen3 via mlx-audio chunks long audio itself (`--chunk-duration`, default
+  30 s in the CLI) and needs a separate forced aligner for word timestamps; not yet
+  checked on a full 100-min file for drift or truncation. Default model **unchanged**.
