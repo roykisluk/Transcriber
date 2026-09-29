@@ -1,6 +1,7 @@
 # EconTranscriber (`econ/`)
 
-English econ seminars/lectures from an existing file, via mlx-whisper on Metal.
+English econ seminars/lectures from an existing file. Default backend since 2026-09-29:
+Qwen3-ASR + Qwen3-ForcedAligner via mlx-audio on Metal (`--backend mlx` = whisper turbo).
 See `README.md` for usage. Root `Transcriber/` is the separate Hebrew meeting pipeline.
 
 ## Operating rules
@@ -8,8 +9,8 @@ See `README.md` for usage. Root `Transcriber/` is the separate Hebrew meeting pi
 - Run through `econ/.venv/` (`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`).
 - `python transcribe.py --self-check` runs the repetition-gate self-checks. Run it after
   touching `drop_degenerate_segments`.
-- ~0.02–0.03x RTF on Apple Silicon: 6h40m of video transcribes in about 8 minutes. Budget
-  a full re-run rather than patching output by hand.
+- ~0.04x RTF with Qwen3 (100 min in ~4 min), ~0.02x with whisper turbo. Budget a full
+  re-run rather than patching output by hand.
 
 ## Lesson log
 
@@ -109,3 +110,31 @@ word times, both mlx-community, via mlx-audio; own glue script — mlx-audio doe
 - **Cues:** built from word times — break at sentence end (if >1.5 s), >1 s pause, 84
   chars or 7 s; two lines split at the space nearest the middle.
 - Output parked next to the video as `….qwen3.en.srt`; `transcribe.py` still unchanged.
+
+### 2026-09-29 — Qwen3 is now the default backend (`--backend qwen`)
+Roy chose it after the two entries above. `transcribe_qwen()` in `transcribe.py` = the
+scratch glue script: 240 s chunks, ASR → aligner per chunk, `_attach_punct` carries the
+ASR's punctuation onto the aligner's bare words, `_cues` builds cues, then the same
+`_assemble` (repetition gate) and the same four writers. `--backend mlx` = old turbo path.
+- **Silent lead-in, the old worst case, is clean.** 3 webinar starts (Golub Pt 1, GP Ep 1
+  — the batch that looped `sca sca` under turbo — and SoFiE) plus a synthetic 90 s silence
+  + 90 s pink noise before speech: Qwen3 emitted **nothing** over the dead air; first
+  cue at exactly 180.0 s. An all-silence file returns empty text → the aligner is skipped
+  (it would get an empty string otherwise).
+- **SRT/VTT now wrap cues to two lines** (`_two_lines`, split near the middle) for every
+  backend — turbo's long cues were one 300-char line.
+- **`--prompt`/`--no-econ-prompt` do nothing on `qwen`** (mlx-audio drops Qwen3's context);
+  it prints a note. ECON_PROMPT stays for the whisper backends.
+- **Close calls flip between environments.** Same bit-identical audio, run in the scratch
+  venv (mlx 0.32.3) vs `econ/.venv` (mlx 0.32.0): ~100 word diffs in 16.7k, mostly
+  punctuation, but also "borrowing"↔"boring" and "Kolmogorov forward"↔"Komogorov-Fokker".
+  Within one venv, three runs were identical — it is numerics, not sampling. Neither run
+  is better overall, and both keep the lead over turbo on the full lecture:
+  Hamilton-Jacobi-Bellman 20/20 vs 1 (turbo: "Jackie" x16), borrowing constraint 13/18
+  vs 3 (turbo: "boring constraint" x21), Dirac 9/9 vs 2. **Regression to know:** one run
+  spelled Kolmogorov wrong every time (0 vs turbo's 6) — the proper-noun pass (entry
+  above) is still needed.
+- **Verified:** `--self-check` extended (punctuation carry, sentence split, zero-length
+  cue held 1 s but never into the next cue, two-line wrap) and mutation-tested
+  (`CUE_MIN_S=0` → caught). End-to-end on the full .webm: 233 s for 99.6 min, all four
+  formats; silent file OK; `--backend mlx` still OK.

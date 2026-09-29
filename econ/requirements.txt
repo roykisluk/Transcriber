@@ -1,6 +1,7 @@
 # EconTranscriber dependencies
 # System dependency: ffmpeg (install via: brew install ffmpeg)
 
-mlx-whisper>=0.4.0       # Primary backend — Apple Silicon Metal GPU
+mlx-audio>=0.5.7         # Primary backend — Qwen3-ASR + ForcedAligner, Metal GPU
+mlx-whisper>=0.4.0       # Whisper backend — Apple Silicon Metal GPU
 faster-whisper>=1.0.0    # Fallback backend — CPU (CTranslate2)
  

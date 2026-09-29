@@ -1,11 +1,11 @@
 # EconTranscriber
 
-Whisper-based transcriber for academic economics videos — seminars, lectures, and classes. Optimized for Apple Silicon via Metal GPU acceleration.
+Transcriber for academic economics videos — seminars, lectures, and classes. Optimized for Apple Silicon via Metal GPU acceleration. Default model is Qwen3-ASR (chosen over whisper-large-v3-turbo on 2026-09-29 — see `CLAUDE.md`).
 
 ## Features
 
-- **Apple Silicon GPU** — uses [mlx-whisper](https://github.com/ml-explore/mlx-examples) with Metal acceleration (M1/M2/M3/M4)
-- **Economics-tuned** — built-in initial prompt covering econometrics vocabulary (IV, diff-in-diff, GMM, DSGE, etc.) for better accuracy on technical content
+- **Apple Silicon GPU** — Qwen3-ASR + Qwen3-ForcedAligner via [mlx-audio](https://github.com/Blaizzy/mlx-audio) (default), or [mlx-whisper](https://github.com/ml-explore/mlx-examples), both on Metal
+- **Economics-tuned** — Qwen3 gets econ jargon right out of the box (Dirac, borrowing constraint, Hamilton-Jacobi-Bellman); the whisper backends use a built-in econometrics vocabulary prompt instead
 - **Multiple output formats** — plain text, SRT subtitles, WebVTT, and JSON with full segment metadata
 - **Batch processing** — transcribe multiple videos in one command
 - **Fallback backend** — drops to `faster-whisper` (CPU) if needed
@@ -22,7 +22,7 @@ Whisper-based transcriber for academic economics videos — seminars, lectures, 
 ## Installation
 
 ```bash
-pip install mlx-whisper faster-whisper
+pip install mlx-audio mlx-whisper faster-whisper
 ```
 
 Or from `requirements.txt`:
@@ -31,7 +31,7 @@ Or from `requirements.txt`:
 pip install -r requirements.txt
 ```
 
-On first run, the Whisper model (~800 MB) is downloaded automatically from HuggingFace and cached locally.
+On first run, the models (Qwen3-ASR ~2.5 GB + aligner ~1 GB, or whisper ~800 MB) are downloaded automatically from HuggingFace and cached locally.
 
 ## Usage
 
@@ -68,13 +68,13 @@ python transcribe.py lecture.mp4 --verbose
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--model` | `mlx-community/whisper-large-v3-turbo` | Whisper model to use |
-| `--backend` | `mlx` | `mlx` (GPU) or `faster-whisper` (CPU) |
+| `--model` | per backend | `mlx-community/Qwen3-ASR-1.7B-8bit` for `qwen`, `mlx-community/whisper-large-v3-turbo` otherwise |
+| `--backend` | `qwen` | `qwen` (Qwen3 on GPU), `mlx` (whisper on GPU) or `faster-whisper` (whisper on CPU) |
 | `--format` | `all` | Output formats: `txt srt vtt json all` |
 | `--output-dir` | same dir as video | Where to save transcripts |
 | `--language` | `en` | Language code, or `auto` to detect |
-| `--prompt` | — | Additional context appended to the economics prompt |
-| `--no-econ-prompt` | — | Disable the built-in economics vocabulary prompt |
+| `--prompt` | — | Additional context appended to the economics prompt (whisper backends only) |
+| `--no-econ-prompt` | — | Disable the built-in economics vocabulary prompt (whisper backends only) |
 | `--verbose` | — | Print each segment as it is transcribed |
 
 ## Output formats
@@ -90,15 +90,16 @@ python transcribe.py lecture.mp4 --verbose
 
 | Model | Speed | Accuracy | Use case |
 |-------|-------|----------|----------|
-| `mlx-community/whisper-large-v3-turbo` | ~1x real-time | Excellent | Default — best balance |
+| `mlx-community/Qwen3-ASR-1.7B-8bit` (`--backend qwen`) | ~4 min per 100 min | Best on econ jargon | Default |
+| `mlx-community/whisper-large-v3-turbo` (`--backend mlx`) | ~2 min per 100 min | Garbles jargon, drops short phrases | When you need a vocabulary prompt |
 | `mlx-community/whisper-large-v3` | ~0.5x real-time | Best | Dense technical content |
 | `mlx-community/whisper-medium` | ~2x real-time | Good | Quick drafts |
 
-Speed measured on M1 Max after model is cached.
+Qwen3/turbo speeds measured on an M5 Pro, 2026-09-29; whisper rows below them are older M1 Max figures (x real-time).
 
 ## Tips for academic videos
 
-- **Add a speaker/topic prompt** for better proper-noun accuracy:
+- **Add a speaker/topic prompt** for better proper-noun accuracy (whisper backends only — `--backend mlx`):
   ```bash
   python transcribe.py talk.mp4 --prompt "Speaker: Emi Nakamura. Topic: fiscal stimulus and regional multipliers."
   ```

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-EconTranscriber — Whisper-based transcriber for academic economics videos.
-Primary backend: mlx-whisper (Apple Silicon Metal GPU)
-Fallback backend: faster-whisper (CPU)
+EconTranscriber — transcriber for academic economics videos.
+Primary backend: Qwen3-ASR + Qwen3-ForcedAligner via mlx-audio (Apple Silicon Metal GPU)
+Alternatives: mlx-whisper (Metal GPU), faster-whisper (CPU)
 """
 
 import argparse
+import difflib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -116,6 +118,82 @@ def transcribe_mlx(audio_path: Path, model: str, language: str, initial_prompt: 
     return _assemble(segments, verbose)
 
 
+QWEN_ASR = "mlx-community/Qwen3-ASR-1.7B-8bit"
+QWEN_ALIGNER = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+# The aligner's timestamps stop at 266.56 s (3332 x 80 ms) despite the "5 minutes" on its
+# model card; past that every word piles onto the last timestamp. Chunk well under it.
+QWEN_CHUNK_S = 240
+CUE_CHARS, CUE_MAX_S, CUE_GAP_S, CUE_MIN_S = 84, 7.0, 1.0, 1.0
+
+
+def _norm_word(w: str) -> str:
+    return re.sub(r"[^\w']", "", w.lower())
+
+
+def _attach_punct(asr_text: str, items: list) -> list:
+    """The aligner returns bare words; carry the ASR's punctuated tokens onto their times."""
+    toks = asr_text.split()
+    a, b = [_norm_word(t) for t in toks], [_norm_word(i.text) for i in items]
+    words = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if op == "equal":
+            words += [(toks[i], items[j].start_time, items[j].end_time) for i, j in zip(range(i1, i2), range(j1, j2))]
+        elif i2 > i1 and j2 > j1:   # spread the ASR tokens over the aligned span
+            s, e, n = items[j1].start_time, items[j2 - 1].end_time, i2 - i1
+            words += [(toks[i1 + k], s + (e - s) * k / n, s + (e - s) * (k + 1) / n) for k in range(n)]
+        elif i2 > i1:               # tokens the aligner skipped (bare punctuation)
+            t = words[-1][2] if words else (items[j1].start_time if items else 0.0)
+            words += [(toks[i], t, t) for i in range(i1, i2)]
+    return words
+
+
+def _cues(words: list) -> list:
+    """Group (word, start, end) into subtitle cues: sentence end, pause, length or duration."""
+    groups, cur = [], []
+    for w in words:
+        if cur and (w[1] - cur[-1][2] > CUE_GAP_S
+                    or len(" ".join(x[0] for x in cur)) + len(w[0]) + 1 > CUE_CHARS
+                    or w[2] - cur[0][1] > CUE_MAX_S):
+            groups.append(cur)
+            cur = []
+        cur.append(w)
+        if re.search(r"[.?!]$", w[0]) and cur[-1][2] - cur[0][1] > 1.5:
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    segs = [{"start": g[0][1], "end": g[-1][2], "text": " ".join(x[0] for x in g)} for g in groups]
+    # The aligner sometimes gives a lone word start == end, which would never display.
+    for s, nxt in zip(segs, segs[1:] + [None]):
+        s["end"] = max(s["end"], min(s["start"] + CUE_MIN_S, nxt["start"] if nxt else s["start"] + CUE_MIN_S))
+    return segs
+
+
+def transcribe_qwen(audio_path: Path, model: str, language: str, initial_prompt: str, verbose: bool) -> dict:
+    import numpy as np
+    from mlx_audio.stt.utils import load_audio, load_model
+    from mlx_audio.stt.models.qwen3_asr.qwen3_asr import split_audio_into_chunks
+    print(f"  Transcribing with Qwen3-ASR + forced aligner on Apple Silicon GPU...")
+    print(f"  Model: {model}")
+    if initial_prompt:
+        # mlx-audio silently drops Qwen3's context argument, so a prompt would do nothing.
+        print(f"  Note: vocabulary prompts are not supported by this backend and are ignored.")
+    lang = None if language == "auto" else {"en": "English"}.get(language, language)
+    asr, aligner = load_model(model), load_model(QWEN_ALIGNER)
+    wav = np.array(load_audio(str(audio_path), sr=16000))
+    chunks = split_audio_into_chunks(wav, 16000, chunk_duration=QWEN_CHUNK_S)
+    words = []
+    for k, (chunk, offset) in enumerate(chunks, 1):
+        text = asr.generate(chunk, language=lang).text.strip()
+        if not text:                # silence: nothing to align
+            continue
+        items = aligner.generate(chunk, text=text, language=lang or "English").items
+        words += [(w, s + offset, e + offset) for w, s, e in _attach_punct(text, items)]
+        if verbose:
+            print(f"    [chunk {k}/{len(chunks)} @{offset:.0f}s] {len(text.split())} words")
+    return _assemble(_cues(words), verbose)
+
+
 def _map_model_size(model: str) -> str:
     name = model.lower()
     for size in ("large-v3-turbo", "large-v3", "large-v2", "large", "medium", "small", "base", "tiny"):
@@ -170,12 +248,20 @@ def write_txt(result: dict, out_path: Path):
     out_path.write_text(wrapped + "\n", encoding="utf-8")
 
 
+def _two_lines(text: str) -> str:
+    """Break a subtitle longer than 42 chars at the space nearest its middle."""
+    if len(text) <= 42 or " " not in text:
+        return text
+    k = min((i for i, ch in enumerate(text) if ch == " "), key=lambda i: abs(i - len(text) / 2))
+    return text[:k] + "\n" + text[k + 1:]
+
+
 def write_srt(result: dict, out_path: Path):
     lines = []
     for i, seg in enumerate(result["segments"], 1):
         lines.append(str(i))
         lines.append(f"{_fmt_srt_time(seg['start'])} --> {_fmt_srt_time(seg['end'])}")
-        lines.append(seg["text"])
+        lines.append(_two_lines(seg["text"]))
         lines.append("")
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -184,7 +270,7 @@ def write_vtt(result: dict, out_path: Path):
     lines = ["WEBVTT", ""]
     for seg in result["segments"]:
         lines.append(f"{_fmt_vtt_time(seg['start'])} --> {_fmt_vtt_time(seg['end'])}")
-        lines.append(seg["text"])
+        lines.append(_two_lines(seg["text"]))
         lines.append("")
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -231,18 +317,19 @@ def parse_args():
         Examples:
           python transcribe.py sample.mp4
           python transcribe.py lecture1.mp4 lecture2.mp4 --format srt txt
-          python transcribe.py *.mp4 --model mlx-community/whisper-large-v3 --output-dir ./transcripts
+          python transcribe.py *.mp4 --backend mlx --model mlx-community/whisper-large-v3 --output-dir ./transcripts
           python transcribe.py seminar.mp4 --backend faster-whisper --verbose
         """),
     )
     parser.add_argument("videos", nargs="+", type=Path, help="Video file(s) to transcribe")
     parser.add_argument(
-        "--model", default="mlx-community/whisper-large-v3-turbo",
-        help="Whisper model (default: mlx-community/whisper-large-v3-turbo)"
+        "--model", default=None,
+        help=f"Model (default: {QWEN_ASR} for qwen, mlx-community/whisper-large-v3-turbo otherwise)"
     )
     parser.add_argument(
-        "--backend", choices=["mlx", "faster-whisper"], default="mlx",
-        help="Transcription backend (default: mlx — Apple Silicon GPU)"
+        "--backend", choices=["qwen", "mlx", "faster-whisper"], default="qwen",
+        help="Transcription backend (default: qwen — Qwen3-ASR on Apple Silicon GPU; "
+             "mlx — whisper on GPU; faster-whisper — whisper on CPU)"
     )
     parser.add_argument(
         "--format", dest="formats", nargs="+",
@@ -289,7 +376,10 @@ def main():
     if args.prompt:
         initial_prompt = (initial_prompt + " " + args.prompt).strip()
 
-    transcribe_fn = transcribe_mlx if args.backend == "mlx" else transcribe_faster_whisper
+    transcribe_fn = {"qwen": transcribe_qwen, "mlx": transcribe_mlx,
+                     "faster-whisper": transcribe_faster_whisper}[args.backend]
+    if args.model is None:
+        args.model = QWEN_ASR if args.backend == "qwen" else "mlx-community/whisper-large-v3-turbo"
 
     total_videos = len(args.videos)
     failed = []
@@ -371,6 +461,22 @@ def _self_check():
     assert kept == [real, the, short, longword], kept
     assert drop_degenerate_segments([]) == []
     assert _assemble([loop, real])["text"] == real["text"]
+
+    # Qwen cue building: punctuation carried onto aligner words, sentence split,
+    # and a zero-length lone word held open for CUE_MIN_S without overlapping the next cue.
+    class Item:
+        def __init__(self, text, start, end):
+            self.text, self.start_time, self.end_time = text, start, end
+    words = _attach_punct("Hello there, world. However, yes",
+                          [Item("Hello", 0.0, 0.5), Item("there", 0.5, 1.0), Item("world", 1.0, 2.0),
+                           Item("However", 4.0, 4.0), Item("yes", 4.5, 5.0)])
+    assert [w[0] for w in words] == ["Hello", "there,", "world.", "However,", "yes"], words
+    cues = _cues(words)
+    assert [c["text"] for c in cues] == ["Hello there, world.", "However, yes"], cues
+    assert _cues([("However,", 4.0, 4.0)])[0]["end"] == 5.0
+    assert _cues([("A", 4.0, 4.0), ("B", 5.5, 6.0)])[0]["end"] == 5.0
+    assert _two_lines("short") == "short"
+    assert _two_lines("a" * 20 + " " + "b" * 30) == "a" * 20 + "\n" + "b" * 30
     print("ok")
 
 
