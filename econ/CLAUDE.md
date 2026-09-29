@@ -87,3 +87,25 @@ mlx-community/Qwen3-ASR-1.7B-8bit) read by hand.
   30 s in the CLI) and its `.srt` is **one cue per chunk** (4 cues for 15 min) — usable
   subtitles need the separate Qwen3-ForcedAligner (≤5-min spans); not yet
   checked on a full 100-min file for drift or truncation. Default model **unchanged**.
+
+### 2026-09-29 — Qwen3-ASR + ForcedAligner full-length: subtitles work, with two traps
+Full 100-min run on the Moll lecture (Qwen3-ASR-1.7B-8bit text, Qwen3-ForcedAligner-0.6B-8bit
+word times, both mlx-community, via mlx-audio; own glue script — mlx-audio does not chain them).
+- **Trap 1 — the aligner's clock stops at 266.56 s** (= 3332 x 80 ms) although the model
+  card says "up to 5 minutes". With ~280 s chunks the last ~15 s of every chunk (51 words
+  in chunk 1) all got `start == end == 266.56`. **Symptom:** a run of identical word
+  timestamps at the chunk tail. **Fix:** chunk at 240 s (`split_audio_into_chunks`,
+  low-energy cut points).
+- **Trap 2 — lone words with `start == end`** (7 in 100 min, e.g. "However," after a
+  pause) became zero-length cues that never display. **Fix:** hold every cue >= 1 s,
+  capped at the next cue's start.
+- **Timing verified three ways:** Qwen3 vs turbo word starts: median 0.06 s, flat in every
+  5-min bin (no drift). Parakeet as tie-breaker: |Qwen3 − Parakeet| median 0.08 s vs
+  |turbo − Parakeet| 0.12 s; on the 1.5% of words where Qwen3 and turbo disagree by >1 s,
+  Parakeet sided with Qwen3 90 times, turbo 64. **Qwen3's timing is at least as good as turbo's.**
+- **Coverage:** Qwen3 16.7k words vs turbo 15.9k, spread evenly (every 5-min bin +2–10%),
+  no gaps, no loops — consistent with turbo dropping short phrases, not Qwen3 inventing.
+- **Cost:** 4 min for 100 min of audio (ASR 215 s, aligner 23 s) vs turbo ~2 min.
+- **Cues:** built from word times — break at sentence end (if >1.5 s), >1 s pause, 84
+  chars or 7 s; two lines split at the space nearest the middle.
+- Output parked next to the video as `….qwen3.en.srt`; `transcribe.py` still unchanged.
