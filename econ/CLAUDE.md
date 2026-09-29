@@ -138,3 +138,16 @@ ASR's punctuation onto the aligner's bare words, `_cues` builds cues, then the s
   cue held 1 s but never into the next cue, two-line wrap) and mutation-tested
   (`CUE_MIN_S=0` → caught). End-to-end on the full .webm: 233 s for 99.6 min, all four
   formats; silent file OK; `--backend mlx` still OK.
+
+### 2026-09-29 — throttled batch: whole Stat Mech course (10 lectures, 17 h) in ~2 h
+Roy wanted it cool, not fast. **Throttle = SIGSTOP/SIGCONT duty cycle** on the python pid,
+10 s on / 20 s off, 60 s cool-down between files, `caffeinate -i -w $$` for the run.
+`nice` is useless here — the work is on the Metal GPU (see root `CLAUDE.md`, 2026-09-18).
+Result: 11:09–13:04, ~10 min per 100-min lecture (vs ~4 unthrottled), no thermal warnings
+in `pmset -g therm`. All 10 full coverage, 123–135 wpm, no zero-length cues, no loops.
+- **Trap — `wait $pid` returns 145 after a SIGSTOP-throttled child exits cleanly.**
+  145 = 128 + 17 = SIGSTOP on macOS: zsh reports the last *stop* status, not the exit
+  code. Every lecture "failed" by rc while every log said `All done.`. Judge success by
+  the log / output files, or poll `kill -0` then read the status another way.
+- Shorter bursts at the same duty (e.g. 3 s / 6 s) would smooth temperature swings
+  further; 10/20 was fine.
