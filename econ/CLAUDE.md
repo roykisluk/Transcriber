@@ -84,5 +84,6 @@ mlx-community/Qwen3-ASR-1.7B-8bit) read by hand.
   the original `CohereLabs/` repo is HF-gated. mlx-audio's `--context` is **silently
   ignored** for Qwen3 (output identical with/without) — no vocab biasing via that runtime.
 - **Open:** Qwen3 via mlx-audio chunks long audio itself (`--chunk-duration`, default
-  30 s in the CLI) and needs a separate forced aligner for word timestamps; not yet
+  30 s in the CLI) and its `.srt` is **one cue per chunk** (4 cues for 15 min) — usable
+  subtitles need the separate Qwen3-ForcedAligner (≤5-min spans); not yet
   checked on a full 100-min file for drift or truncation. Default model **unchanged**.
