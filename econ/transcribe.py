@@ -162,7 +162,16 @@ def _cues(words: list) -> list:
             cur = []
     if cur:
         groups.append(cur)
-    segs = [{"start": g[0][1], "end": g[-1][2], "text": " ".join(x[0] for x in g)} for g in groups]
+    segs = []
+    for g in groups:
+        s = {"start": g[0][1], "end": g[-1][2], "text": " ".join(x[0] for x in g)}
+        # Same start as the previous cue (a zero-length word before one spread past CUE_MAX_S):
+        # merge, or the hold below would be capped at that start and leave a 0 s cue.
+        if segs and s["start"] <= segs[-1]["start"]:
+            segs[-1]["end"] = max(segs[-1]["end"], s["end"])
+            segs[-1]["text"] += " " + s["text"]
+        else:
+            segs.append(s)
     # The aligner sometimes gives a lone word start == end, which would never display.
     for s, nxt in zip(segs, segs[1:] + [None]):
         s["end"] = max(s["end"], min(s["start"] + CUE_MIN_S, nxt["start"] if nxt else s["start"] + CUE_MIN_S))
@@ -475,6 +484,9 @@ def _self_check():
     assert [c["text"] for c in cues] == ["Hello there, world.", "However, yes"], cues
     assert _cues([("However,", 4.0, 4.0)])[0]["end"] == 5.0
     assert _cues([("A", 4.0, 4.0), ("B", 5.5, 6.0)])[0]["end"] == 5.0
+    # Zero-length word, then a word at the same start spread past CUE_MAX_S (Susskind QM L5):
+    # one cue, never a 0 s one.
+    assert _cues([("no", 4.0, 4.0), ("no", 4.0, 14.0)]) == [{"start": 4.0, "end": 14.0, "text": "no no"}]
     assert _two_lines("short") == "short"
     assert _two_lines("a" * 20 + " " + "b" * 30) == "a" * 20 + "\n" + "b" * 30
     print("ok")

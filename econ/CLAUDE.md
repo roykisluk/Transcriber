@@ -151,3 +151,13 @@ in `pmset -g therm`. All 10 full coverage, 123–135 wpm, no zero-length cues, n
   the log / output files, or poll `kill -0` then read the status another way.
 - Shorter bursts at the same duty (e.g. 3 s / 6 s) would smooth temperature swings
   further; 10/20 was fine.
+
+### 2026-09-30 — Susskind QM batch; a zero-length cue when two cues share a start
+Same throttle at 5 s on / 10 s off, 90 s cool-down: 10 lectures (18.1 h) in 2 h 13 min, RTF
+~0.10, no thermal warnings. Full coverage, 125–136 wpm.
+- **Symptom:** one cue in ~16k with `start == end` (QM L5, 59:21, "no" from "no no no no").
+- **Root cause:** the aligner gave word 1 `start == end` and word 2 the *same* start but a 14 s
+  span. Word 2 alone exceeds `CUE_MAX_S`, so `_cues` split between them; the 1 s hold is capped
+  at the next cue's start, which equalled this cue's start → 0 s.
+- **Fix:** `_cues` merges a group into the previous cue when its start is not later. Self-check
+  case added and mutation-tested (merge disabled → AssertionError).
