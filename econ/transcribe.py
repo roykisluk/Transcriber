@@ -136,6 +136,7 @@ QWEN_CHUNK_S = 240
 # with no space ("end.Next"), so the PyTorch path chunks at its limit itself. Its generate
 # cap defaults to 512 tokens, which ~180 s of fast speech can exceed; raise it.
 QWEN_TORCH_CHUNK_S, QWEN_TORCH_MAX_TOKENS, QWEN_TORCH_BATCH = 180, 2048, 16
+QWEN_VLLM_GPU_SHARE = 0.6            # of the 20 GB; the rest holds the aligner
 CUE_CHARS, CUE_MAX_S, CUE_GAP_S, CUE_MIN_S = 84, 7.0, 1.0, 1.0
 
 
@@ -206,33 +207,43 @@ def _cues(words: list) -> list:
 def _transcribe_qwen_torch(audio_path: Path, model: str, language: str, initial_prompt: str, verbose: bool) -> dict:
     import torch
     from qwen_asr import Qwen3ASRModel
+    from qwen_asr.inference.qwen3_forced_aligner import Qwen3ForcedAligner
     from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
+    try:                            # optional: `pip install qwen-asr[vllm]` (see econ/CLAUDE.md)
+        import vllm  # noqa: F401
+        engine = "vLLM"
+    except ImportError:
+        engine = "PyTorch"
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    print(f"  Transcribing with Qwen3-ASR + forced aligner (PyTorch, {device})...")
+    print(f"  Transcribing with Qwen3-ASR ({engine}) + forced aligner on {device}...")
     print(f"  Model: {model}")
     # Unlike mlx-audio, qwen-asr does use the context. The generic ECON_PROMPT changes nothing,
     # but a lecture's own terms via --prompt fix what it mishears ("Dirac" -> "direct").
     lang = None if language == "auto" else {"en": "English"}.get(language, language)
     kw = dict(dtype=torch.bfloat16, device_map=device)
-    asr = Qwen3ASRModel.from_pretrained(
-        model, forced_aligner=QWEN_ALIGNER, forced_aligner_kwargs=kw,
-        max_inference_batch_size=QWEN_TORCH_BATCH, max_new_tokens=QWEN_TORCH_MAX_TOKENS, **kw)
-    wav =normalize_audio_input(str(audio_path))
+    if engine == "vLLM":            # 4x faster ASR than transformers generate, and better jargon
+        asr = Qwen3ASRModel.LLM(model=model, max_new_tokens=QWEN_TORCH_MAX_TOKENS,
+                                gpu_memory_utilization=QWEN_VLLM_GPU_SHARE, max_model_len=8192)
+    else:
+        asr = Qwen3ASRModel.from_pretrained(
+            model, max_inference_batch_size=QWEN_TORCH_BATCH, max_new_tokens=QWEN_TORCH_MAX_TOKENS, **kw)
+    aligner = Qwen3ForcedAligner.from_pretrained(QWEN_ALIGNER, **kw)
+    wav = normalize_audio_input(str(audio_path))
     chunks = split_audio_into_chunks(wav, 16000, max_chunk_sec=QWEN_TORCH_CHUNK_S)
-    results = asr.transcribe([(c, 16000) for c, _ in chunks], context=initial_prompt,
-                             language=lang, return_time_stamps=True)
+    results = asr.transcribe([(c, 16000) for c, _ in chunks], context=initial_prompt, language=lang)
     words = []
-    for k, ((_, offset), r) in enumerate(zip(chunks, results), 1):
+    for k, ((chunk, offset), r) in enumerate(zip(chunks, results), 1):
         text = r.text.strip()
-        if not text:                # silence: qwen-asr skips the aligner too
+        if not text:                # silence: nothing to align
             continue
         spoken = _strip_echo(text, initial_prompt)
         if verbose and spoken != text:
             print(f"    [chunk {k}: dropped a recital of the prompt]")
-        # The aligner also timed the recital; _attach_punct's diff leaves those words unmatched.
-        words += [(w, s + offset, e + offset) for w, s, e in _attach_punct(spoken, r.time_stamps.items)]
+        # One chunk per aligner call: 34 chunks took 10.6 s one at a time, 74 s as one batch.
+        items = aligner.align(audio=[(chunk, 16000)], text=[spoken], language=[r.language or "English"])[0].items
+        words += [(w, s + offset, e + offset) for w, s, e in _attach_punct(spoken, items)]
         if verbose:
-            print(f"    [chunk {k}/{len(chunks)} @{offset:.0f}s] {len(text.split())} words")
+            print(f"    [chunk {k}/{len(chunks)} @{offset:.0f}s] {len(spoken.split())} words")
     return _assemble(_cues(words), verbose)
 
 

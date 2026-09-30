@@ -7,12 +7,15 @@ See `README.md` for usage. Root `Transcriber/` is the separate Hebrew meeting pi
 ## Operating rules
 
 - Run through `econ/.venv/` (`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`).
-- **On tbox (CUDA GPU):** run through `~/envs/asr`; same command, `transcribe_qwen` picks PyTorch
-  off Apple Silicon. Pass the lecture's own terms with `--prompt` (see 2026-09-30). Rebuild the env
-  (uv, because conda's Python 3.13 rejects the TAU proxy CA):
-  `export PATH=$HOME/.local/bin:$PATH UV_SYSTEM_CERTS=1; uv venv ~/envs/asr --python 3.12`
-  `uv pip install -p ~/envs/asr/bin/python torch torchaudio --index-url https://download.pytorch.org/whl/cu128`
-  `uv pip install -p ~/envs/asr/bin/python qwen-asr`. ffmpeg comes from the image (apt).
+- **On tbox (CUDA GPU):** run through `~/envs/asr`; same command, `transcribe_qwen` picks the
+  CUDA path off Apple Silicon, vLLM if installed (else transformers). Pass the lecture's own terms
+  with `--prompt` (see 2026-09-30). ~2.2 min per 100-min lecture. Rebuild the env with uv (conda's
+  Python 3.13 rejects the TAU proxy CA) on uv's *own* Python (vLLM compiles against `Python.h`,
+  which the system python3 lacks):
+  `export PATH=$HOME/.local/bin:$PATH UV_SYSTEM_CERTS=1`
+  `uv venv ~/envs/asr --python 3.12 --python-preference only-managed`
+  `uv pip install -p ~/envs/asr/bin/python "qwen-asr[vllm]"` (pins vllm 0.14.0 + torch 2.9.1).
+  ffmpeg comes from the image (apt). The host CPU crashes jobs at random — rerun (see below).
 - `python transcribe.py --self-check` runs the repetition-gate self-checks. Run it after
   touching `drop_degenerate_segments`.
 - ~0.04x RTF with Qwen3 (100 min in ~4 min), ~0.02x with whisper turbo. Budget a full
@@ -214,4 +217,27 @@ original `Qwen/Qwen3-ASR-1.7B` + `Qwen3-ForcedAligner-0.6B` (bf16, RTX 4000 Ada 
   undo it. **Rerun on failure** until the host is fixed (warranty, or turbo capped).
 - **Also works:** `mlx[cuda]` 0.32.3 + mlx-audio on tbox (`~/envs/asr-mlx`, GPU matmul OK) — the
   exact Mac stack is available there if the MLX output is wanted; not wired or benchmarked.
+
+### 2026-09-30 — vLLM for the ASR, one chunk per aligner call: 383 s → 134 s, better jargon
+- **vLLM 0.14.0** (`qwen-asr[vllm]`, `Qwen3ASRModel.LLM`, 60% of the GPU) replaces transformers
+  `generate` for the text. ASR alone: 52 s for the 100-min lecture.
+- **The aligner was the real bottleneck, and batching made it worse:** 34 chunks aligned one per
+  call 10.6 s, 8 per call 14.7 s, all 34 in one call 73.8 s (padding). qwen-asr batches the
+  aligner with the ASR batch size, so `_transcribe_qwen_torch` now runs the ASR as one batch and
+  calls `Qwen3ForcedAligner.align` per chunk itself, on the recital-stripped text.
+- **End-to-end (CLI, terms prompt):** vLLM 134.5 s (RTF 0.02); transformers fallback 266 s (was
+  383 s). Timing vs the Mac: median 0.05 s, no drift, no zero-length cues, no recitals.
+- **vLLM also transcribes better** — word agreement with the Mac's MLX run 98.3% (transformers path
+  95.9%). HJB 21 (Mac 20, transformers 12), borrowing constraint 18 (13 / 11), "boring
+  constraint" 7 (12 / 12), Dirac 9, Kolmogorov 18. The transformers `generate` path in qwen-asr is
+  the odd one out; likely why "Dirac" became "direct" there.
+- **vLLM setup traps:** (1) it spawns its engine in a fresh process, so any script using it needs
+  an `if __name__ == "__main__":` guard (transcribe.py has one); (2) torch.compile builds a C helper
+  that needs `Python.h` — the Ubuntu system Python (which uv picks by default) has no headers, so
+  the env must use uv's managed Python; (3) WSL disables pinned memory (a warning, harmless).
+- **Transformers path drifts between setups:** loading the aligner separately changed ~1.6% of
+  words vs the earlier run (punctuation, "twenty"/"20") — numerics, the same "close calls flip"
+  effect as the Mac's mlx versions. Not corruption; completed runs are self-consistent.
+- **CPU:** confirmed as the crash source by a pure-Python stress test (container-standard
+  `ops/CONTAINER.md`). vLLM's startup also segfaulted once on it.
 

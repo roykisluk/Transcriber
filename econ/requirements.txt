@@ -4,6 +4,5 @@
 mlx-audio>=0.5.7; sys_platform == "darwin"     # Primary backend on the Mac — Qwen3-ASR + ForcedAligner, Metal GPU
 mlx-whisper>=0.4.0; sys_platform == "darwin"   # Whisper backend — Apple Silicon Metal GPU
 faster-whisper>=1.0.0                          # Fallback backend — CPU (CTranslate2)
-qwen-asr>=0.0.6; sys_platform == "linux"       # Primary backend on Linux/CUDA (tbox). Install CUDA
-                                               # torch first: pip install torch --index-url
-                                               # https://download.pytorch.org/whl/cu128
+qwen-asr[vllm]>=0.0.6; sys_platform == "linux" # Primary backend on Linux/CUDA (tbox); needs a Python
+                                               # with headers (uv managed) — see econ/CLAUDE.md
