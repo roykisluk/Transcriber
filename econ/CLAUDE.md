@@ -215,8 +215,8 @@ original `Qwen/Qwen3-ASR-1.7B` + `Qwen3-ForcedAligner-0.6B` (bf16, RTX 4000 Ada 
   `ops/CONTAINER.md` 2026-09-24). CPU is an i9-14900K — the Raptor Lake instability family. BIOS is
   Dell 1.27.0 (2026-06), which should carry Intel's microcode fix; it stops degradation, it does not
   undo it. **Rerun on failure** until the host is fixed (warranty, or turbo capped).
-- **Also works:** `mlx[cuda]` 0.32.3 + mlx-audio on tbox (`~/envs/asr-mlx`, GPU matmul OK) — the
-  exact Mac stack is available there if the MLX output is wanted; not wired or benchmarked.
+- **Also works:** `mlx[cuda]` 0.32.3 + mlx-audio on tbox (GPU matmul OK) — the exact Mac stack
+  could run there; not wired or benchmarked. The test env was deleted (vLLM made it moot).
 
 ### 2026-09-30 — vLLM for the ASR, one chunk per aligner call: 383 s → 134 s, better jargon
 - **vLLM 0.14.0** (`qwen-asr[vllm]`, `Qwen3ASRModel.LLM`, 60% of the GPU) replaces transformers
@@ -240,4 +240,14 @@ original `Qwen/Qwen3-ASR-1.7B` + `Qwen3-ForcedAligner-0.6B` (bf16, RTX 4000 Ada 
   effect as the Mac's mlx versions. Not corruption; completed runs are self-consistent.
 - **CPU:** confirmed as the crash source by a pure-Python stress test (container-standard
   `ops/CONTAINER.md`). vLLM's startup also segfaulted once on it.
+
+### 2026-09-30 — decided: no vLLM on the Mac; small traps from the port
+- **vLLM on the Mac: not worth it (Roy agreed).** `vllm-metal` (first release 2026-09-22) runs vLLM's
+  scheduler on top of MLX, aimed at concurrent serving. The Mac's MLX path already agrees with
+  tbox's vLLM output 98.3%, so the quality win vLLM gave tbox (over transformers) is not there to
+  have; Qwen3-ASR support in vllm-metal is unconfirmed; and Roy prefers the Mac cool over fast.
+  Bulk jobs go to tbox (~2 min per lecture).
+- **ffmpeg without `-vn` on a `.webm` → `.flac`** kept the video stream and crawled for minutes
+  (and hot). `transcribe.py`'s own `extract_audio` writes `.wav`, which drops video by itself, but
+  any hand-made audio extract needs `-vn` (and `-sample_fmt s16` to halve a FLAC's size).
 
