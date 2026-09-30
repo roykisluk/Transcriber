@@ -160,6 +160,18 @@ def _attach_punct(asr_text: str, items: list) -> list:
     return words
 
 
+def _strip_echo(text: str, prompt: str) -> str:
+    """qwen-asr sometimes recites the context at the end of a chunk, glued to its last real words
+    ("So now.Continuous-time ...") — 2 of 34 chunks on the Moll lecture, same chunks with any
+    prompt. Cut a match covering >= 60% of the prompt; no lecturer says that much of it verbatim."""
+    if not prompt:
+        return text
+    m = difflib.SequenceMatcher(a=text, b=prompt, autojunk=False).find_longest_match(0, len(text), 0, len(prompt))
+    if m.size >= max(30, 0.6 * len(prompt)):
+        return " ".join((text[:m.a] + " " + text[m.a + m.size:].lstrip(" .,:;")).split())
+    return text
+
+
 def _cues(words: list) -> list:
     """Group (word, start, end) into subtitle cues: sentence end, pause, length or duration."""
     groups, cur = [], []
@@ -214,7 +226,11 @@ def _transcribe_qwen_torch(audio_path: Path, model: str, language: str, initial_
         text = r.text.strip()
         if not text:                # silence: qwen-asr skips the aligner too
             continue
-        words += [(w, s + offset, e + offset) for w, s, e in _attach_punct(text, r.time_stamps.items)]
+        spoken = _strip_echo(text, initial_prompt)
+        if verbose and spoken != text:
+            print(f"    [chunk {k}: dropped a recital of the prompt]")
+        # The aligner also timed the recital; _attach_punct's diff leaves those words unmatched.
+        words += [(w, s + offset, e + offset) for w, s, e in _attach_punct(spoken, r.time_stamps.items)]
         if verbose:
             print(f"    [chunk {k}/{len(chunks)} @{offset:.0f}s] {len(text.split())} words")
     return _assemble(_cues(words), verbose)
@@ -424,7 +440,9 @@ def main():
     formats = resolve_formats(args.formats)
 
     initial_prompt = ""
-    if not args.no_econ_prompt:
+    # Whisper only: qwen on CUDA ignores ECON_PROMPT for accuracy and echoed it into the
+    # transcript twice in 100 min (2026-09-30). qwen gets just the lecture's own --prompt terms.
+    if not args.no_econ_prompt and args.backend != "qwen":
         initial_prompt = ECON_PROMPT
     if args.prompt:
         initial_prompt = (initial_prompt + " " + args.prompt).strip()
@@ -531,6 +549,12 @@ def _self_check():
     # Zero-length word, then a word at the same start spread past CUE_MAX_S (Susskind QM L5):
     # one cue, never a 0 s one.
     assert _cues([("no", 4.0, 4.0), ("no", 4.0, 14.0)]) == [{"start": 4.0, "end": 14.0, "text": "no no"}]
+    terms = "Continuous-time models: Dirac delta, Kolmogorov forward equation."
+    assert _strip_echo(terms + " So the value function", terms) == "So the value function"
+    assert _strip_echo("So now." + terms + " Then we", terms) == "So now. Then we"  # glued, mid-chunk
+    assert _strip_echo("Dirac delta, Kolmogorov forward equation. Then we", terms) == "Then we"  # partial
+    assert _strip_echo("Dirac delta is a spike.", terms) == "Dirac delta is a spike."  # real speech
+    assert _strip_echo("Hello", "") == "Hello"
     assert _two_lines("short") == "short"
     assert _two_lines("a" * 20 + " " + "b" * 30) == "a" * 20 + "\n" + "b" * 30
     print("ok")
