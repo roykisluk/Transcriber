@@ -203,15 +203,15 @@ original `Qwen/Qwen3-ASR-1.7B` + `Qwen3-ForcedAligner-0.6B` (bf16, RTX 4000 Ada 
   gap 0.06 s. Counts before the strip were inflated by the two recitals (+2 each).
 - **Deterministic:** two unprompted full runs gave byte-identical `.srt` files — evidence that runs
   which *complete* are not silently corrupted by the flaky CPU below.
-- **Random crashes are the host, not the code (unconfirmed, strongly suggested).** 5 of 10 full
+- **Random crashes are the host CPU — CONFIRMED later the same day** by a pure-Python stress loop
+  that failed the same way at max single-core boost (container-standard `ops/CONTAINER.md`).** 5 of 10 full
   runs failed: four "impossible" TypeErrors inside qwen-asr's pure-Python `fix_timestamp` loop
   (`dp = [1] * n`, then `dp[i]` → `'range_iterator' object is not subscriptable`) and one hard
   segfault in python3.12 (dmesg, 14:13). Different error every time, same code and audio passes on
   rerun, and the box's dmesg shows Python segfaults for days (container-standard
   `ops/CONTAINER.md` 2026-09-24). CPU is an i9-14900K — the Raptor Lake instability family. BIOS is
   Dell 1.27.0 (2026-06), which should carry Intel's microcode fix; it stops degradation, it does not
-  undo it. **Rerun on failure.** Not yet separated from a C-extension bug in the torch/qwen-asr
-  stack: a pure-Python stress loop that never imports either would settle it.
+  undo it. **Rerun on failure** until the host is fixed (warranty, or turbo capped).
 - **Also works:** `mlx[cuda]` 0.32.3 + mlx-audio on tbox (`~/envs/asr-mlx`, GPU matmul OK) — the
   exact Mac stack is available there if the MLX output is wanted; not wired or benchmarked.
 
