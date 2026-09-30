@@ -7,6 +7,9 @@ See `README.md` for usage. Root `Transcriber/` is the separate Hebrew meeting pi
 ## Operating rules
 
 - Run through `econ/.venv/` (`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`).
+- **On tbox (CUDA GPU):** run through `~/envs/asr` (uv, Python 3.12: CUDA torch from the cu128
+  index, then `qwen-asr`). Same command; `transcribe_qwen` picks PyTorch off Apple Silicon.
+  Pass the lecture's own terms with `--prompt` — there it works (see 2026-09-30).
 - `python transcribe.py --self-check` runs the repetition-gate self-checks. Run it after
   touching `drop_degenerate_segments`.
 - ~0.04x RTF with Qwen3 (100 min in ~4 min), ~0.02x with whisper turbo. Budget a full
@@ -161,3 +164,36 @@ Same throttle at 5 s on / 10 s off, 90 s cool-down: 10 lectures (18.1 h) in 2 h 
   at the next cue's start, which equalled this cue's start → 0 s.
 - **Fix:** `_cues` merges a group into the previous cue when its start is not later. Self-check
   case added and mutation-tested (merge disabled → AssertionError).
+
+### 2026-09-30 — ported to tbox's GPU (PyTorch `qwen-asr`); a flaky host CPU
+Same `--backend qwen`; off Apple Silicon `_transcribe_qwen_torch` runs Qwen's own package with the
+original `Qwen/Qwen3-ASR-1.7B` + `Qwen3-ForcedAligner-0.6B` (bf16, RTX 4000 Ada 20 GB).
+- **Speed:** 100-min Moll lecture in ~6 min (RTF 0.06-0.08, incl. model load); GPU 95-100%, 20 GB.
+- **Own chunking at 180 s, not qwen-asr's.** Its `transcribe()` re-chunks anything longer than
+  180 s for alignment and then `"".join`s the chunk texts — English words fuse at every boundary.
+  So chunks are cut here (its `split_audio_into_chunks`) and passed as one batch; offsets added back.
+- **`max_new_tokens` default is 512** in the transformers path; 180 s of fast speech is ~500 words.
+  Raised to 2048.
+- **Timing matches the Mac:** median word-time gap 0.07 s, flat across the lecture, same last cue,
+  no zero-length cues, no identical-timestamp runs (the 266 s aligner trap does not apply at 180 s).
+- **Jargon is worse without a prompt, and it is the model build, not the chunking.** Unprompted:
+  HJB 8 vs Mac 20, Dirac 1 vs 9 ("direct"), Kolmogorov 0 vs 7 ("Komarov 40"), "gonna" x40 vs 8.
+  One 179 s slice run alone, no batching: MLX 8-bit → "Dirac" x8; PyTorch bf16 *and* fp32 →
+  "direct" x8. **Dead ends:** left padding (tokenizer ships `right`) — output identical;
+  fp32 — no help; the generic ECON_PROMPT — no change at all.
+- **Fix: a short list of the lecture's own terms via `--prompt`.** Unlike mlx-audio, qwen-asr
+  really uses the context. With "Dirac delta, Kolmogorov forward equation, Fokker-Planck equation,
+  Hamilton-Jacobi-Bellman equation": Dirac 11, Kolmogorov 7, HJB 12 on the full lecture. No prompt
+  echo: over a 90 s near-silent lead-in the first word still lands at 90.1 s with any prompt.
+- **Random crashes are the host, not the code (unconfirmed, strongly suggested).** 5 of 10 full
+  runs failed: four "impossible" TypeErrors inside qwen-asr's pure-Python `fix_timestamp` loop
+  (`dp = [1] * n`, then `dp[i]` → `'range_iterator' object is not subscriptable`) and one hard
+  segfault in python3.12 (dmesg, 14:13). Different error every time, same code and audio passes on
+  rerun, and the box's dmesg shows Python segfaults for days (container-standard
+  `ops/CONTAINER.md` 2026-09-24). CPU is an i9-14900K — the Raptor Lake instability family. BIOS is
+  Dell 1.27.0 (2026-06), which should carry Intel's microcode fix; it stops degradation, it does not
+  undo it. **Rerun on failure; results that complete are not known to be silently corrupted, but
+  that can't be ruled out either.**
+- **Also works:** `mlx[cuda]` 0.32.3 + mlx-audio on tbox (`~/envs/asr-mlx`, GPU matmul OK) — the
+  exact Mac stack is available there if the MLX output is wanted; not wired or benchmarked.
+

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 EconTranscriber — transcriber for academic economics videos.
-Primary backend: Qwen3-ASR + Qwen3-ForcedAligner via mlx-audio (Apple Silicon Metal GPU)
+Primary backend: Qwen3-ASR + Qwen3-ForcedAligner via mlx-audio (Apple Silicon Metal GPU),
+or via Qwen's PyTorch package qwen-asr elsewhere (CUDA GPU, e.g. tbox)
 Alternatives: mlx-whisper (Metal GPU), faster-whisper (CPU)
 """
 
 import argparse
 import difflib
 import json
+import platform
 import re
 import subprocess
 import sys
@@ -118,11 +120,22 @@ def transcribe_mlx(audio_path: Path, model: str, language: str, initial_prompt: 
     return _assemble(segments, verbose)
 
 
-QWEN_ASR = "mlx-community/Qwen3-ASR-1.7B-8bit"
-QWEN_ALIGNER = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+# Apple Silicon runs Qwen3 through mlx-audio (8-bit MLX weights); anywhere else (tbox's
+# CUDA GPU) through Qwen's own PyTorch package `qwen-asr`, which needs the original weights.
+APPLE = sys.platform == "darwin" and platform.machine() == "arm64"
+if APPLE:
+    QWEN_ASR = "mlx-community/Qwen3-ASR-1.7B-8bit"
+    QWEN_ALIGNER = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+else:
+    QWEN_ASR = "Qwen/Qwen3-ASR-1.7B"
+    QWEN_ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B"
 # The aligner's timestamps stop at 266.56 s (3332 x 80 ms) despite the "5 minutes" on its
 # model card; past that every word piles onto the last timestamp. Chunk well under it.
 QWEN_CHUNK_S = 240
+# qwen-asr re-chunks anything longer than 180 s for alignment and then joins the chunk texts
+# with no space ("end.Next"), so the PyTorch path chunks at its limit itself. Its generate
+# cap defaults to 512 tokens, which ~180 s of fast speech can exceed; raise it.
+QWEN_TORCH_CHUNK_S, QWEN_TORCH_MAX_TOKENS, QWEN_TORCH_BATCH = 180, 2048, 16
 CUE_CHARS, CUE_MAX_S, CUE_GAP_S, CUE_MIN_S = 84, 7.0, 1.0, 1.0
 
 
@@ -178,7 +191,38 @@ def _cues(words: list) -> list:
     return segs
 
 
+def _transcribe_qwen_torch(audio_path: Path, model: str, language: str, initial_prompt: str, verbose: bool) -> dict:
+    import torch
+    from qwen_asr import Qwen3ASRModel
+    from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    print(f"  Transcribing with Qwen3-ASR + forced aligner (PyTorch, {device})...")
+    print(f"  Model: {model}")
+    # Unlike mlx-audio, qwen-asr does use the context. The generic ECON_PROMPT changes nothing,
+    # but a lecture's own terms via --prompt fix what it mishears ("Dirac" -> "direct").
+    lang = None if language == "auto" else {"en": "English"}.get(language, language)
+    kw = dict(dtype=torch.bfloat16, device_map=device)
+    asr = Qwen3ASRModel.from_pretrained(
+        model, forced_aligner=QWEN_ALIGNER, forced_aligner_kwargs=kw,
+        max_inference_batch_size=QWEN_TORCH_BATCH, max_new_tokens=QWEN_TORCH_MAX_TOKENS, **kw)
+    wav =normalize_audio_input(str(audio_path))
+    chunks = split_audio_into_chunks(wav, 16000, max_chunk_sec=QWEN_TORCH_CHUNK_S)
+    results = asr.transcribe([(c, 16000) for c, _ in chunks], context=initial_prompt,
+                             language=lang, return_time_stamps=True)
+    words = []
+    for k, ((_, offset), r) in enumerate(zip(chunks, results), 1):
+        text = r.text.strip()
+        if not text:                # silence: qwen-asr skips the aligner too
+            continue
+        words += [(w, s + offset, e + offset) for w, s, e in _attach_punct(text, r.time_stamps.items)]
+        if verbose:
+            print(f"    [chunk {k}/{len(chunks)} @{offset:.0f}s] {len(text.split())} words")
+    return _assemble(_cues(words), verbose)
+
+
 def transcribe_qwen(audio_path: Path, model: str, language: str, initial_prompt: str, verbose: bool) -> dict:
+    if not APPLE:
+        return _transcribe_qwen_torch(audio_path, model, language, initial_prompt, verbose)
     import numpy as np
     from mlx_audio.stt.utils import load_audio, load_model
     from mlx_audio.stt.models.qwen3_asr.qwen3_asr import split_audio_into_chunks
@@ -337,7 +381,7 @@ def parse_args():
     )
     parser.add_argument(
         "--backend", choices=["qwen", "mlx", "faster-whisper"], default="qwen",
-        help="Transcription backend (default: qwen — Qwen3-ASR on Apple Silicon GPU; "
+        help="Transcription backend (default: qwen — Qwen3-ASR on Apple Silicon or CUDA GPU; "
              "mlx — whisper on GPU; faster-whisper — whisper on CPU)"
     )
     parser.add_argument(
