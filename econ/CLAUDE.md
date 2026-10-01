@@ -251,3 +251,16 @@ original `Qwen/Qwen3-ASR-1.7B` + `Qwen3-ForcedAligner-0.6B` (bf16, RTX 4000 Ada 
   (and hot). `transcribe.py`'s own `extract_audio` writes `.wav`, which drops video by itself, but
   any hand-made audio extract needs `-vn` (and `-sample_fmt s16` to halve a FLAC's size).
 
+
+### 2026-10-01 — first bulk run on tbox (90 lectures, 152 h): a crash can orphan vLLM's engine
+Driver + details: `Courses` repo, `Tools/tbox/run.sh` and skill `tbox-transcribe`.
+- **Symptom:** after ~10 good files, every later file failed in seconds: vLLM `ValueError: No available
+  memory for the cache blocks`, 123 tries in a row. GPU 0% busy but 11 GB used.
+- **Root cause:** when the main process dies (host-CPU segfault/TypeError), vLLM's `VLLM::EngineCore`
+  child survives, reparented to pid 1, still holding its 60% GPU share. Every new `transcribe.py`
+  then can't fit its KV cache. Exit codes don't show it; `nvidia-smi` does.
+- **Fix (in the driver, not here):** before each try, kill processes with ppid 1 and args
+  `VLLM::EngineCore`. **Open question:** `transcribe.py` could do this itself on start, or run the
+  engine so it dies with the parent. Not done.
+- **CPU-crash rate in bulk:** ~25% of tries (25 of 102), each a different "impossible" error. With 5 tries
+  per file + one rerun, all 90 finished; ~2.3 min per 100-min lecture.
