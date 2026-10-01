@@ -259,8 +259,8 @@ Driver + details: `Courses` repo, `Tools/tbox/run.sh` and skill `tbox-transcribe
 - **Root cause:** when the main process dies (host-CPU segfault/TypeError), vLLM's `VLLM::EngineCore`
   child survives, reparented to pid 1, still holding its 60% GPU share. Every new `transcribe.py`
   then can't fit its KV cache. Exit codes don't show it; `nvidia-smi` does.
-- **Fix (in the driver, not here):** before each try, kill processes with ppid 1 and args
-  `VLLM::EngineCore`. **Open question:** `transcribe.py` could do this itself on start, or run the
-  engine so it dies with the parent. Not done.
+- **Fix:** `_kill_orphaned_vllm_engines()` runs before vLLM starts: kills this user's processes with
+  ppid 1 whose cmdline starts `VLLM::EngineCore` (from `/proc`, SIGKILL). Tested on tbox with three
+  fakes: orphaned engine killed; engine with a live parent and a differently named orphan both spared.
 - **CPU-crash rate in bulk:** ~25% of tries (25 of 102), each a different "impossible" error. With 5 tries
   per file + one rerun, all 90 finished; ~2.3 min per 100-min lecture.

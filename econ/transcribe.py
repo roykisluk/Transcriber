@@ -204,6 +204,32 @@ def _cues(words: list) -> list:
     return segs
 
 
+def _kill_orphaned_vllm_engines() -> int:
+    """Kill this user's VLLM::EngineCore processes whose parent died (ppid 1).
+
+    A crashed run (tbox's flaky CPU) leaves its engine alive holding ~11 GB of GPU, and every
+    later run fails with "No available memory for the cache blocks" (2026-10-01). A live run's
+    engine still has its parent, so it is never matched. Linux /proc only.
+    """
+    import os
+    import signal
+    killed = 0
+    for p in Path("/proc").glob("[0-9]*"):
+        try:
+            if p.stat().st_uid != os.getuid():
+                continue
+            ppid = int((p / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            if ppid == 1 and (p / "cmdline").read_bytes().startswith(b"VLLM::EngineCore"):
+                os.kill(int(p.name), signal.SIGKILL)
+                killed += 1
+        except (OSError, ValueError, IndexError):
+            continue                # process exited mid-scan, or not ours to touch
+    if killed:
+        print(f"  Killed {killed} orphaned vLLM engine(s) left by a crashed run")
+        time.sleep(2)               # let the driver release their GPU memory
+    return killed
+
+
 def _transcribe_qwen_torch(audio_path: Path, model: str, language: str, initial_prompt: str, verbose: bool) -> dict:
     import torch
     from qwen_asr import Qwen3ASRModel
@@ -222,6 +248,7 @@ def _transcribe_qwen_torch(audio_path: Path, model: str, language: str, initial_
     lang = None if language == "auto" else {"en": "English"}.get(language, language)
     kw = dict(dtype=torch.bfloat16, device_map=device)
     if engine == "vLLM":            # 4x faster ASR than transformers generate, and better jargon
+        _kill_orphaned_vllm_engines()
         asr = Qwen3ASRModel.LLM(model=model, max_new_tokens=QWEN_TORCH_MAX_TOKENS,
                                 gpu_memory_utilization=QWEN_VLLM_GPU_SHARE, max_model_len=8192)
     else:
