@@ -66,14 +66,25 @@ ff_pid=$!
 stop() { kill -INT "$ff_pid" 2>/dev/null || true; }
 trap 'stop; restore' INT TERM
 
+# RECORD_CONTROL=<pidfile>: started by Hammerspoon's zoom_record, whose popup
+# answers instead of the terminal prompt below — by signal, to the pid written
+# here. USR1 = discard (stop + delete), USR2 = English. Traps go in before the
+# pid is published, since both signals kill by default.
+lang=he
+discard=0
+if [[ -n ${RECORD_CONTROL:-} ]]; then
+  trap 'discard=1; stop' USR1
+  trap 'lang=en' USR2
+  print $$ > "$RECORD_CONTROL"
+fi
+
 # Language, asked WHILE recording — it isn't needed until transcription (after
 # Ctrl-C), so a slow answer costs no audio. Default Hebrew on N / silence / no tty.
 # The 5s timeout is enforced by the tty driver (min 0 time 50 = return after at
 # most 5s with whatever's there), NOT by `read -t`: zsh's `read -q -t5` never
 # times out at all, and `read -k1 -t5` proved unreliable here. The driver can't
 # hang, so a missed keypress can never strand a recording. Tested 2026-08-11.
-lang=he
-if [[ -t 0 ]]; then
+if [[ -z ${RECORD_CONTROL:-} && -t 0 ]]; then
   stty_saved=$(stty -g 2>/dev/null || true)
   if [[ -n $stty_saved ]] && stty -icanon min 0 time 50 2>/dev/null; then
     print -n "Meeting in English? [y/N] (5s, default Hebrew) "
@@ -83,12 +94,21 @@ if [[ -t 0 ]]; then
     print ""
   fi
 fi
-print "Language: $lang"
-export TRANSCRIBE_LANG=$lang
 
 # `wait` is interrupted by the trap, so loop until ffmpeg is actually gone.
 while kill -0 "$ff_pid" 2>/dev/null; do wait "$ff_pid" 2>/dev/null || true; done
 restore   # explicit: Ctrl-C already restored via the INT trap, but a natural stop hasn't
+# Language printed after the stop: with RECORD_CONTROL it can change mid-recording.
+print "Language: $lang"
+export TRANSCRIBE_LANG=$lang
+if [[ -n ${RECORD_CONTROL:-} ]]; then
+  rm -f "$RECORD_CONTROL"
+  if (( discard )); then
+    rm -f "$out"
+    print "Discarded: $out"
+    exit 0
+  fi
+fi
 
 print ""
 if [[ ! -f $out ]]; then

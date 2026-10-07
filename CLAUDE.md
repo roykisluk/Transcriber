@@ -8,6 +8,9 @@
 - Recordings live in `~/Recordings/`. The `.m4a` is the only irreplaceable artifact —
   `.txt`/`.srt` are always regenerable, and re-running `transcribe-meeting` **overwrites**
   them. Copy the old `.txt` aside first if it still has value.
+- `RECORD_CONTROL=<pidfile> record` (set by Hammerspoon's `zoom_record.lua`, in
+  MacSync): no terminal language prompt; `record` writes its pid and obeys
+  `USR1` = discard (stop + delete the .m4a, no transcription) and `USR2` = English.
 
 ## Lesson log
 
@@ -177,3 +180,29 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   Upload URLs expire in ~15 min, so don't create them and then go do something slow.
 - Still no update-in-place path for `notion-meeting` (open item above) — unrelated, but
   the same page-per-run trap applies to anything that re-uploads.
+
+### 2026-10-07 — auto-start on Zoom meetings, with a keep/discard popup
+- **Want:** a Zoom meeting starts → `record` starts on its own, and a 10 s popup
+  [Hebrew] [English] [Discard] lets Roy throw it away. No answer = keep, Hebrew.
+- **Design:** `~/.hammerspoon/zoom_record.lua` polls every 3 s for Zoom's `CptHost`
+  helper and fires on its not-running → running edge, opening `record` in an iTerm tab
+  (reuses `command_runner.in_iterm`). The popup is `osascript display dialog … giving up
+  after 10` run via `hs.task` (async; `hs.dialog.blockAlert` would freeze Hammerspoon).
+  Its answer reaches `record` as a signal to the pid in `~/Recordings/.record.pid`.
+- **CptHost = in a meeting, verified both ways:** Zoom launched 13:59:56, CptHost
+  appeared 14:01:22 at join, and exited 15:39:56 when the meeting ended.
+- **Trap 1 — `pgrep -f` inside `hs.execute` always matches.** `hs.execute` runs the
+  command through `sh -c`, whose own argv contains the pattern; pgrep skips itself but
+  not its parent shell, so "is record running?" was always yes and nothing ever
+  started. Fix: `pgrep -qf 'zsh .*/bin/[r]ecord'`. The `[r]` matches the real process
+  but not the literal text.
+- **Trap 2 — the `hs` CLI hangs from a non-tty shell** (even with `-t 3`) while waiting
+  on stdin. Hammerspoon itself was idle. Always call it as `hs -t 3 -c '…' </dev/null`.
+- **Guard:** the watcher skips if any `record` is already running, including one typed by
+  hand (which writes no pidfile). Two of them would fight over the default output.
+- **Order matters:** traps are installed before the pid is published, since USR1/USR2
+  kill by default. Language is now printed after the stop, because it can change
+  mid-recording.
+- **Tested live:** start→Discard and start→English→Discard (ffmpeg survives USR2, the tab
+  shows `Language: en` and `Discarded:`, and the .m4a is gone). **Not yet seen:** a real
+  click on the popup, or the timer firing at a real meeting join.
