@@ -206,3 +206,19 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
 - **Tested live:** start→Discard and start→English→Discard (ffmpeg survives USR2, the tab
   shows `Language: en` and `Discarded:`, and the .m4a is gone). **Not yet seen:** a real
   click on the popup, or the timer firing at a real meeting join.
+
+### 2026-10-11 — Notion page created without a Date
+- **Symptom:** the 2026-10-07 Eitan meeting page ("High-Tech Expansion & Inequality
+  Model…") had an empty Date; the 7 pages around it were fine.
+- **Root cause:** `notion-meeting` left the Date to the headless `claude -p` call. Its
+  session log shows the `notion-create-pages` call set only Meeting name + Summary.
+  The prompt says "non-negotiable"; the model skipped it anyway, and nothing checked.
+- **Fix:** after the page exists, `notion-meeting` PATCHes `Date` itself via the REST
+  API (same keychain token as `notion-append-transcript`; header piped via `-H @-` so
+  the token stays out of `ps`). Date = recording mtime in UTC. Tested by running that
+  block on the 10-07 page: Date became 12:40Z (15:40 local), `is_datetime` 1.
+- **Lesson:** anything deterministic (date, parent) belongs in the script, not the
+  prompt. The model is only there for title + summary.
+- **Related gotcha:** an auto-titled page doesn't contain the attendee's name (an
+  in-person recording is all `[Me]`), so a Notion search for "Tomer" misses it. Pass
+  the name: `record meeting "Tomer"`.
