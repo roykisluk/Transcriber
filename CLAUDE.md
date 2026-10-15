@@ -236,3 +236,19 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   `aac … END element`), so `record` never transcribed it. ffmpeg still decoded 2052 s
   of 2227 s, and speech ended at 1112 s, so nothing was lost. Check the last segment
   against the speech before assuming loss.
+
+### 2026-10-15 — `record` transcribes on tbox; meeting-end popup stops it
+- **`record`** now calls `tbox transcribe` (GPU, ivrit-ai turbo, auto [Me]/[Them]) and
+  falls back to local `transcribe-meeting` if tbox is unreachable or fails. Probe is
+  `timeout 20 ssh devbox true`: ssh's `ConnectTimeout` doesn't cover the Cloudflare
+  ProxyCommand. Same 2-min slice, local vs tbox: local fused the opening into one
+  run-on `[Them]` line; tbox kept clean turns.
+- **Trap:** `${0:A:h}` inside a zsh function is the *function's* name, not the
+  script's. Hoisted to `here=${0:A:h}` at top level.
+- **`zoom_record.lua`:** CptHost running → not-running edge with our record still alive
+  (pidfile) → popup [Keep recording] [Stop], 60 s, no answer = Stop. Stop = SIGINT,
+  i.e. Ctrl-C, so record finalizes + transcribes + uploads. Hand-typed records have no
+  pidfile and are never asked about.
+- **Testing trap:** a backgrounded `sleep` in a non-interactive shell **ignores SIGINT**,
+  so a fake-record test with `sleep` looked like the stop failed. Use a stand-in that
+  installs an INT handler (perl `$SIG{INT}`), as record does.

@@ -122,7 +122,16 @@ txt="${out:r}.txt"
 nm=("$out")
 [[ -n $name_arg ]] && nm+=("$name_arg")
 
-if ! "${0:A:h}/transcribe-meeting" "$out"; then
+# tbox's GPU (ivrit-ai turbo) first; `tbox transcribe` splits [Me]/[Them] itself.
+# timeout: ssh's ConnectTimeout doesn't cover the Cloudflare ProxyCommand.
+here=${0:A:h}   # inside a function $0 is the function's name
+tx() {
+  timeout 20 ssh -o BatchMode=yes devbox true 2>/dev/null \
+    && zsh -ic "tbox transcribe -l $lang ${(q)out}" && return
+  print -u2 "record: tbox unreachable or failed — transcribing on this Mac."
+  "$here/transcribe-meeting" "$out"
+}
+if ! tx; then
   print -u2 "record: transcription failed."
   print -u2 "Recording is safe at: $out"
   print -u2 "Retry with:  notion-meeting \"$out\"${name_arg:+ \"$name_arg\"}"
