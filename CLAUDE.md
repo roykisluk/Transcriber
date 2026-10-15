@@ -222,3 +222,17 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
 - **Related gotcha:** an auto-titled page doesn't contain the attendee's name (an
   in-person recording is all `[Me]`), so a Notion search for "Tomer" misses it. Pass
   the name: `record meeting "Tomer"`.
+
+### 2026-10-15 — `tbox transcribe` now splits meeting channels itself
+- **Want:** GPU transcription (tbox, ivrit-ai turbo) of a `record` file with the same
+  `[Me]`/`[Them]` labels `transcribe-meeting` gives locally. Before this, `tbox
+  transcribe` downmixed everything to mono, so there were no speaker labels.
+- **Fix (in `~/.zshrc`, MacSync):** 3+ channels → same ffmpeg pan split as
+  `transcribe-meeting`, two tbox runs, merge on `.segments.txt` start times.
+  `record` itself still uses the local pipeline; this is the manual/GPU path.
+- **Trap:** `"c0=$mix[near]"` in zsh is an array subscript, not text, so the mix
+  silently vanished and ffmpeg said only `Error : Invalid argument`. Write `${mix}[...]`.
+- **Also seen:** `meeting-20261013-133104.m4a` is an unfinalized m4a ("partial file",
+  `aac … END element`), so `record` never transcribed it. ffmpeg still decoded 2052 s
+  of 2227 s, and speech ended at 1112 s, so nothing was lost. Check the last segment
+  against the speech before assuming loss.
