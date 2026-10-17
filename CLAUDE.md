@@ -252,3 +252,18 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
 - **Testing trap:** a backgrounded `sleep` in a non-interactive shell **ignores SIGINT**,
   so a fake-record test with `sleep` looked like the stop failed. Use a stand-in that
   installs an INT handler (perl `$SIG{INT}`), as record does.
+
+### 2026-10-17 — one meeting split across Voice Memos + `record`
+- **Case:** Ofir meeting 2026-10-16 = two iPhone Voice Memos (10:23, 10:42) + one `record`
+  (11:54), back to back, in person. Wanted one Notion page, not three.
+- **Voice Memos live at** `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/`;
+  start time + duration from `CloudRecordings.db` table `ZCLOUDRECORDING` (`ZDATE` is
+  Apple epoch: `+978307200`). Copy them to `~/Recordings` first — `tbox transcribe`
+  writes `.txt` beside the audio.
+- **Recipe:** transcribe each file separately, join the `.txt`s under `=== Part N · HH:MM ===`
+  headers, `touch -t` the joined file to the first start time (notion-meeting dates the
+  page from mtime), then `notion-meeting joined.txt "<title>"`. Worked first try.
+- **In-person `record` file:** far channels were −91 dB. Extracted the mic channel to mono
+  (`pan=mono|c0=c0`) before tbox, so the silent channel can't produce hallucinated `[Them]` lines.
+- **Again:** the `record` m4a was unfinalized ("partial file") so it never auto-transcribed —
+  second time (also 10-13). Full 786 s still decoded. Open: why `record` isn't finalizing.
