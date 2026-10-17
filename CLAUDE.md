@@ -265,5 +265,19 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   page from mtime), then `notion-meeting joined.txt "<title>"`. Worked first try.
 - **In-person `record` file:** far channels were −91 dB. Extracted the mic channel to mono
   (`pan=mono|c0=c0`) before tbox, so the silent channel can't produce hallucinated `[Them]` lines.
-- **Again:** the `record` m4a was unfinalized ("partial file") so it never auto-transcribed —
-  second time (also 10-13). Full 786 s still decoded. Open: why `record` isn't finalizing.
+- **Unfinalized** ("partial file") because Roy stopped it without finalizing — not a bug.
+
+### 2026-10-17 — `record` silently drops ~10% of samples since 2026-10-11 (OPEN)
+- **Symptom:** 10-16 file: container/pts say 786 s (matches wall clock 11:54:39→12:07:45),
+  but it decodes to **694 s**. tbox reported `duration=694s`, so transcript timestamps
+  drift ~90 s behind by the end. Words aren't missing in blocks — pts rise evenly, no jump —
+  so the loss is spread thin (sub-second dropouts) across the whole file.
+- **Chronic:** captured audio / container duration = 10-07 **100%** (sr 16k) · 10-11 87%
+  (48k) · 10-12 88% (24k) · 10-13 92% (24k) · 10-16 88% (48k). Sample rate changes run to
+  run — the "Meeting Input" aggregate's rate follows whatever devices are current.
+- **Check:** `ffprobe -count_packets` → `nb_read_packets*1024/sample_rate` vs format duration.
+  `ffprobe format=duration` alone LIES here (reports 786); decode to wav to see the truth.
+- **Suspect, unverified:** aggregate-device clock drift / no drift correction on a sub-device
+  (mic vs BlackHole at different rates), or avfoundation buffer overruns. Not investigated.
+- **Also checked, fine:** memo boundaries (3 s gap, no overlap); part 2 silent gaps are
+  −41…−47 dB (real pauses); part 1's fused 75 s opening segment decodes the same standalone.
