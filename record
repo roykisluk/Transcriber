@@ -8,11 +8,14 @@ set -uo pipefail
 name_arg=${1:-}            # empty unless the user actually named the meeting
 name=${name_arg:-meeting}  # filename stem only; never used as the Notion title
 MEETING_DEVICES=${MEETING_DEVICES:-"$HOME/bin/meeting-devices"}
+MEETING_CAPTURE=${MEETING_CAPTURE:-"$HOME/bin/meeting-capture"}
 
 for tool in ffmpeg SwitchAudioSource; do
   command -v "$tool" >/dev/null 2>&1 || { print -u2 "record: $tool not found (run install.sh)."; exit 1; }
 done
-[[ -x $MEETING_DEVICES ]] || { print -u2 "record: $MEETING_DEVICES missing (run install.sh)."; exit 1; }
+for helper in $MEETING_DEVICES $MEETING_CAPTURE; do
+  [[ -x $helper ]] || { print -u2 "record: $helper missing (run install.sh)."; exit 1; }
+done
 
 # 1. Ensure the aggregate devices exist / match the current defaults.
 "$MEETING_DEVICES" || { print -u2 "record: audio device setup failed (see message above)."; exit 1; }
@@ -35,12 +38,10 @@ SwitchAudioSource -t output -s "Meeting Output" >/dev/null || {
   exit 1
 }
 
-# 4. Resolve the avfoundation audio-device index of "Meeting Input" by name.
-dev_list=$(ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 || true)
-idx=$(print -r -- "$dev_list" | awk -F'[][]' \
-  '/AVFoundation audio devices/{a=1} a && /\] Meeting Input$/{print $4; exit}')
-if [[ -z $idx ]]; then
-  print -u2 "record: could not find the 'Meeting Input' audio device."
+# 4. "Meeting Input"'s own rate and channel count (no resampling, no downmix).
+read rate nch <<<"$("$MEETING_CAPTURE" --format)"
+if [[ -z ${nch:-} ]]; then
+  print -u2 "record: could not read the 'Meeting Input' audio device."
   exit 1
 fi
 
@@ -49,13 +50,22 @@ fi
 # so transcribe-meeting can split near (mic/[Me]) from far (system/[Them]).
 mkdir -p "$HOME/Recordings"
 out="$HOME/Recordings/${name}-$(date +%Y%m%d-%H%M%S).m4a"
-print "Recording 'Meeting Input' (index $idx) -> $out"
+print "Recording 'Meeting Input' ($rate Hz, $nch ch) -> $out"
 print "Press Ctrl-C ONCE to stop (repeated presses hard-kill ffmpeg)."
+# Capture is meeting-capture (CoreAudio AudioQueue), NOT ffmpeg's avfoundation
+# input, which drops ~10% of samples at 48 kHz (lesson log 2026-10-17); ffmpeg
+# only encodes. Layout 3.0 for 3 channels: the default 2.1 makes the last
+# (BlackHole) channel LFE, which AAC cuts to bass only.
+layout=()
+(( nch == 3 )) && layout=(-ch_layout 3.0)
 # Fragmented mp4 (empty_moov + 5s fragments): file stays readable even if
 # ffmpeg is hard-killed (e.g. repeated Ctrl-C) — at most the last ~5s are lost.
 # Backgrounded so the language prompt below costs ZERO audio: capture is already
 # running while it waits. -nostdin so ffmpeg doesn't swallow that keypress.
-ffmpeg -nostdin -hide_banner -loglevel warning -f avfoundation -i ":$idx" \
+# $! is ffmpeg (last in the pipeline); meeting-capture exits when ffmpeg closes
+# the pipe.
+"$MEETING_CAPTURE" | ffmpeg -nostdin -hide_banner -loglevel warning \
+  -f f32le -ar "$rate" -ac "$nch" $layout -i pipe:0 \
   -c:a aac -b:a 96k \
   -movflags +empty_moov+default_base_moof -frag_duration 5000000 "$out" &
 ff_pid=$!

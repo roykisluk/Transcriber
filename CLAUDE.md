@@ -267,17 +267,44 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   (`pan=mono|c0=c0`) before tbox, so the silent channel can't produce hallucinated `[Them]` lines.
 - **Unfinalized** ("partial file") because Roy stopped it without finalizing — not a bug.
 
-### 2026-10-17 — `record` silently drops ~10% of samples since 2026-10-11 (OPEN)
-- **Symptom:** 10-16 file: container/pts say 786 s (matches wall clock 11:54:39→12:07:45),
-  but it decodes to **694 s**. tbox reported `duration=694s`, so transcript timestamps
-  drift ~90 s behind by the end. Words aren't missing in blocks — pts rise evenly, no jump —
-  so the loss is spread thin (sub-second dropouts) across the whole file.
-- **Chronic:** captured audio / container duration = 10-07 **100%** (sr 16k) · 10-11 87%
-  (48k) · 10-12 88% (24k) · 10-13 92% (24k) · 10-16 88% (48k). Sample rate changes run to
-  run — the "Meeting Input" aggregate's rate follows whatever devices are current.
-- **Check:** `ffprobe -count_packets` → `nb_read_packets*1024/sample_rate` vs format duration.
-  `ffprobe format=duration` alone LIES here (reports 786); decode to wav to see the truth.
-- **Suspect, unverified:** aggregate-device clock drift / no drift correction on a sub-device
-  (mic vs BlackHole at different rates), or avfoundation buffer overruns. Not investigated.
-- **Also checked, fine:** memo boundaries (3 s gap, no overlap); part 2 silent gaps are
-  −41…−47 dB (real pauses); part 1's fused 75 s opening segment decodes the same standalone.
+### 2026-10-17 — `record` silently dropped ~10% of samples (FIXED same day)
+- **Symptom:** recordings decoded to 84–92% of their wall-clock length (10-16: 694 s of
+  786 s), so transcript timestamps drifted ~90 s behind by the end. pts rose evenly with
+  no jump: thin dropouts spread over the whole file. Ratios: 10-07 12:36 **84%** (48k) ·
+  10-07 14:02 100% (16k) · 10-11 87% (48k) · 10-12 88% (24k) · 10-13 92% (24k) · 10-16 88% (48k).
+- **Check:** `ffprobe -count_packets` → `nb_read_packets*1024/sample_rate` vs wall clock.
+  `format=duration` alone LIES (reports the pts span); decode to see the truth.
+- **Root cause: ffmpeg's avfoundation input, not the aggregate.** `libavdevice/avfoundation.m`
+  keeps ONE audio buffer slot; each CoreAudio callback overwrites it (`CFRelease` + replace).
+  When the slot is empty, `fftools/ffmpeg_demux.c` sleeps `av_usleep(10000)` — measured
+  **11.90 ms** on this Mac. 48 kHz buffers are 512 frames = **10.67 ms**, so ~1 in 10 is
+  overwritten before it is read: predicted 10.67/11.90 = 89.7%, measured 89–90%.
+- **Proof it isn't the aggregate / the encoder / the date:** 60 s captures — Meeting Input
+  AAC 89.5% · Meeting Input raw PCM 89.1% · built-in mic alone 90.2% · BlackHole alone 89.6%.
+  The loss predates 10-11 (10-07 12:36 was 84%); the one clean file was 16k, where a
+  buffer lasts 32 ms. ffmpeg 9.0.1 throughout (since 08-26); `record` unchanged since 10-07.
+- **Ruled out:** `-thread_queue_size 4096` (90.2%, the loss is upstream of that queue);
+  avfoundation has no buffer option (`ffmpeg -h demuxer=avfoundation`).
+- **Unexplained:** the 24k files lost 8–12% too, though 512 frames at 24k = 21 ms. Likely
+  the IO buffer is time-based (~10.67 ms) rather than 512 frames; not verified.
+- **Fix:** `meeting-capture.swift` (new, built by `install.sh` into `~/bin`) records
+  Meeting Input with an AudioQueue, 8 × 100 ms buffers, at the device's own rate and
+  channel count, writing raw f32le to stdout. `record` pipes it into ffmpeg, which now
+  only encodes (same AAC + fragmented mp4). Stop path unchanged: `$!` is ffmpeg (last in
+  the pipeline), INT → ffmpeg finalizes → meeting-capture gets EPIPE and exits. Any
+  buffer still lost shows up as a sample-time gap: "lost N frames" on stderr.
+- **Second bug found on the way: the last channel was gutted.** ffmpeg's default layout for
+  3 channels is `2.1`, so BlackHole R (c2) was LFE and AAC cut it to bass: in old files
+  c2 is **−96 dB above 1 kHz** vs −32 dB on c1. [Them] survived only because the far mix
+  averages c1+c2. Fix: `-ch_layout 3.0`. Tone test: 3.0 keeps c0/c1/c2 in order through
+  AAC (same as wav); 2.1 drops even a 440 Hz tone on c2 to −81 dB. Old files keep it.
+- **Verified:** 5-min live `record` (RECORD_CONTROL mode, USR2 → en, INT stop) =
+  299.20 s decoded / 299.26 s wall = **99.98%**, 48 kHz, layout 3.0. c0 = room noise
+  (−53 dB), c1/c2 = BlackHole identical and full-band. `say -a 61` (BlackHole) × 30
+  sentences → `tbox transcribe` gave all 30 as `[Them]`, none as `[Me]`. Mic speech on
+  [Me] not re-tested (speakers were muted); c0 is the same index as before.
+- **Test traps:** `join` maps mono inputs to FC, so a 3-tone test file is c0=2nd, c2=1st
+  tone — check the plain wav before blaming the encoder. Measure a piped capture against
+  **wall clock**, never `-t N` (raw PCM pts come from the sample count, so it always reads 100%).
+  Run `record` copies from a scratch dir with a stub `notion-meeting` beside them (found
+  via `${0:A:h}`) to test end-to-end without creating Notion pages.

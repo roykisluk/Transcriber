@@ -57,15 +57,17 @@ else
   [[ $(stat -f%z "$VAD_MODEL") -eq $VAD_MODEL_SIZE ]] || { print -u2 "vad model: size mismatch after download"; exit 1; }
 fi
 
-# 5. Compile the Swift CoreAudio helper (skip if binary is up to date)
+# 5. Compile the Swift CoreAudio helpers (skip if binary is up to date)
 mkdir -p "$BIN"
-if [[ ! -x $BIN/meeting-devices || $REPO/meeting-devices.swift -nt $BIN/meeting-devices ]]; then
-  print "compiling meeting-devices..."
-  swiftc -O -framework CoreAudio -framework AudioToolbox \
-    -o "$BIN/meeting-devices" "$REPO/meeting-devices.swift"
-else
-  print "meeting-devices: up to date"
-fi
+for tool in meeting-devices meeting-capture; do
+  if [[ ! -x $BIN/$tool || $REPO/$tool.swift -nt $BIN/$tool ]]; then
+    print "compiling $tool..."
+    swiftc -O -framework CoreAudio -framework AudioToolbox \
+      -o "$BIN/$tool" "$REPO/$tool.swift"
+  else
+    print "$tool: up to date"
+  fi
+done
 
 # 6. Install record & transcribe into ~/bin (symlink -> repo, so the model
 #    beside them is found and repo edits take effect immediately)
@@ -75,7 +77,7 @@ ln -sf "$REPO/transcribe" "$BIN/transcribe"
 ln -sf "$REPO/transcribe-meeting" "$BIN/transcribe-meeting"
 ln -sf "$REPO/notion-meeting" "$BIN/notion-meeting"
 ln -sf "$REPO/lecture-subtitles" "$BIN/lecture-subtitles"
-print "installed: record, transcribe, transcribe-meeting, notion-meeting, lecture-subtitles, meeting-devices -> $BIN"
+print "installed: record, transcribe, transcribe-meeting, notion-meeting, lecture-subtitles, meeting-devices, meeting-capture -> $BIN"
 
 # 7. Ensure ~/bin is on PATH (append to ~/.zshrc only if missing)
 case ":$PATH:" in
