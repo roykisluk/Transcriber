@@ -343,3 +343,15 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
 - **Unverified:** a real WhatsApp call through the tap (only `afplay` tested), and output
   device switching mid-recording (AirPods).
 - **Today's file:** far channel is silent → its `[Them]` lines, if any, are hallucinated.
+
+### 2026-10-18 — `tbox transcribe -l en` now uses Qwen3-ASR (vLLM), not Whisper large-v3
+- **Why:** the 09-29 econ bake-off (`econ/CLAUDE.md`) had Qwen3 beat Whisper on jargon, but
+  only the lecture pipeline used it; `record` English meetings still got large-v3.
+- **How:** the tbox script (MacSync `dot_local/share/tbox/executable_transcribe`) execs
+  `~/envs/asr/bin/python` and calls `econ/transcribe.py:_transcribe_qwen_torch` from tbox's
+  clone `~/projects/Transcriber` — so **that clone must exist and be pulled** for econ fixes
+  to apply; missing env/clone → silent fallback to large-v3. Hebrew unchanged (ivrit.ai).
+  Context/PROMPT IS used on this torch path (only mlx ignores it).
+- **Check:** `say` clip with econ terms → all right except "two-stage" → "II-stage" (synthetic
+  voice?); ~3 min per call, mostly vLLM startup (paid twice per `record`: near + far).
+  vLLM chatter lands in `.segments.txt`; the [Me]/[Them] merge reads only timestamp lines.
