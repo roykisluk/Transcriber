@@ -1,61 +1,35 @@
 #!/usr/bin/env zsh
 # record [name]
-# Records mic + system audio to ~/Recordings/<name>-<timestamp>.m4a via the
-# "Meeting Input" aggregate. Switches the default output to "Meeting Output"
-# for the duration and restores it on exit (including Ctrl-C). Ctrl-C stops.
+# Records mic + everything the Mac plays to ~/Recordings/<name>-<timestamp>.m4a.
+# The far end is a CoreAudio process tap (meeting-capture), so it works whatever
+# output device the call app uses, even muted. Ctrl-C stops.
 set -uo pipefail
 
 name_arg=${1:-}            # empty unless the user actually named the meeting
 name=${name_arg:-meeting}  # filename stem only; never used as the Notion title
-MEETING_DEVICES=${MEETING_DEVICES:-"$HOME/bin/meeting-devices"}
 MEETING_CAPTURE=${MEETING_CAPTURE:-"$HOME/bin/meeting-capture"}
 
-for tool in ffmpeg SwitchAudioSource; do
-  command -v "$tool" >/dev/null 2>&1 || { print -u2 "record: $tool not found (run install.sh)."; exit 1; }
-done
-for helper in $MEETING_DEVICES $MEETING_CAPTURE; do
-  [[ -x $helper ]] || { print -u2 "record: $helper missing (run install.sh)."; exit 1; }
-done
+command -v ffmpeg >/dev/null 2>&1 || { print -u2 "record: ffmpeg not found (run install.sh)."; exit 1; }
+[[ -x $MEETING_CAPTURE ]] || { print -u2 "record: $MEETING_CAPTURE missing (run install.sh)."; exit 1; }
 
-# 1. Ensure the aggregate devices exist / match the current defaults.
-"$MEETING_DEVICES" || { print -u2 "record: audio device setup failed (see message above)."; exit 1; }
-
-# 2. Remember the current default output so we can restore it.
-prev_out=$(SwitchAudioSource -c -t output 2>/dev/null || true)
-if [[ $prev_out == "Meeting Output" ]]; then
-  # Stale state (a previous run didn't restore): fall back to a real output.
-  prev_out=$(SwitchAudioSource -a -t output 2>/dev/null | grep -v '^Meeting Output$' | head -1)
-fi
-
-restore() {
-  [[ -n ${prev_out:-} ]] && SwitchAudioSource -t output -s "$prev_out" >/dev/null 2>&1 || true
-}
-trap restore EXIT INT TERM
-
-# 3. Route system audio through Meeting Output (so BlackHole hears it too).
-SwitchAudioSource -t output -s "Meeting Output" >/dev/null || {
-  print -u2 "record: failed to switch output to 'Meeting Output' (system audio would be missing); aborting."
-  exit 1
-}
-
-# 4. "Meeting Input"'s own rate and channel count (no resampling, no downmix).
+# Mic's own rate; mic channels + the tap's 2 (no resampling, no downmix).
 read rate nch <<<"$("$MEETING_CAPTURE" --format)"
 if [[ -z ${nch:-} ]]; then
-  print -u2 "record: could not read the 'Meeting Input' audio device."
+  print -u2 "record: could not set up audio capture (see message above)."
   exit 1
 fi
 
-# 5. Record until Ctrl-C. `|| true` so a SIGINT stop still prints the next step.
-# Capture ALL aggregate channels as-is (no downmix): mic first, BlackHole last,
+# Record until Ctrl-C. `|| true` so a SIGINT stop still prints the next step.
+# Capture ALL channels as-is (no downmix): mic first, the tap last,
 # so transcribe-meeting can split near (mic/[Me]) from far (system/[Them]).
 mkdir -p "$HOME/Recordings"
 out="$HOME/Recordings/${name}-$(date +%Y%m%d-%H%M%S).m4a"
-print "Recording 'Meeting Input' ($rate Hz, $nch ch) -> $out"
+print "Recording mic + system audio ($rate Hz, $nch ch) -> $out"
 print "Press Ctrl-C ONCE to stop (repeated presses hard-kill ffmpeg)."
-# Capture is meeting-capture (CoreAudio AudioQueue), NOT ffmpeg's avfoundation
-# input, which drops ~10% of samples at 48 kHz (lesson log 2026-10-17); ffmpeg
-# only encodes. Layout 3.0 for 3 channels: the default 2.1 makes the last
-# (BlackHole) channel LFE, which AAC cuts to bass only.
+# Capture is meeting-capture, NOT ffmpeg's avfoundation input, which drops ~10%
+# of samples at 48 kHz (lesson log 2026-10-17); ffmpeg only encodes. Layout 3.0
+# for 3 channels: the default 2.1 makes the last (tap) channel LFE, which AAC
+# cuts to bass only.
 layout=()
 (( nch == 3 )) && layout=(-ch_layout 3.0)
 # Fragmented mp4 (empty_moov + 5s fragments): file stays readable even if
@@ -74,7 +48,7 @@ ff_pid=$!
 # job, so Ctrl-C has to be relayed by hand. SIGINT (never KILL) so ffmpeg
 # finalizes the file on the way out.
 stop() { kill -INT "$ff_pid" 2>/dev/null || true; }
-trap 'stop; restore' INT TERM
+trap stop INT TERM
 
 # RECORD_CONTROL=<pidfile>: started by Hammerspoon's zoom_record, whose popup
 # answers instead of the terminal prompt below — by signal, to the pid written
@@ -107,7 +81,6 @@ fi
 
 # `wait` is interrupted by the trap, so loop until ffmpeg is actually gone.
 while kill -0 "$ff_pid" 2>/dev/null; do wait "$ff_pid" 2>/dev/null || true; done
-restore   # explicit: Ctrl-C already restored via the INT trap, but a natural stop hasn't
 # Language printed after the stop: with RECORD_CONTROL it can change mid-recording.
 print "Language: $lang"
 export TRANSCRIBE_LANG=$lang

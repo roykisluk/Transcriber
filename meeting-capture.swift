@@ -1,14 +1,21 @@
-// meeting-capture — stream the "Meeting Input" aggregate to stdout as raw
-// interleaved float32 PCM, at the device's own rate and channel count.
+// meeting-capture — stream mic + everything the Mac plays to stdout as raw
+// interleaved float32 PCM, at the mic's own rate: mic channels first, then the
+// 2 channels of a system-wide process tap.
 //
 //   meeting-capture --format   prints "<rate> <channels>" and exits
 //   meeting-capture            streams until stdout closes (ffmpeg exits)
 //
-// Replaces ffmpeg's avfoundation input, which loses ~10% of samples: it keeps a
-// single buffer slot that each new CoreAudio buffer overwrites, and polls it
-// every 10 ms (really ~11.9 ms) while 48 kHz buffers arrive every 10.67 ms.
-// AudioQueue holds several 100 ms buffers instead, so a slow reader only delays.
-// Any buffer that is still lost shows up as a sample-time gap, reported on stderr.
+// The far end comes from a CoreAudio process tap, not BlackHole + a multi-output
+// device: the tap hears every app whatever output device it picked, so a WhatsApp
+// call that ignores the default output is still captured (lesson log 2026-10-18).
+// The tap needs "System Audio Recording" for the terminal (iTerm); without it the
+// tap delivers silence, so the grant is checked up front and warned about.
+//
+// Read with an IOProc. An AudioQueue on the tap aggregate got all-zero tap
+// channels, and ffmpeg's avfoundation input loses ~10% of samples (2026-10-17).
+// The IOProc only copies; writes happen on a serial queue, so a slow reader
+// delays output instead of dropping input. A sample-time gap means lost input
+// and is reported on stderr.
 //
 // Build: swiftc -O -framework CoreAudio -framework AudioToolbox -o meeting-capture meeting-capture.swift
 
@@ -16,28 +23,61 @@ import Foundation
 import CoreAudio
 import AudioToolbox
 
-let DEVICE_UID = "com.roybox.meeting.input"   // = INPUT_UID in meeting-devices.swift
-
 func fail(_ msg: String) -> Never {
     FileHandle.standardError.write(Data(("meeting-capture: " + msg + "\n").utf8))
     exit(1)
 }
 
-func deviceByUID(_ uid: String) -> AudioObjectID? {
-    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
-                                          mScope: kAudioObjectPropertyScopeGlobal,
-                                          mElement: kAudioObjectPropertyElementMain)
-    var cfUID = uid as CFString
-    var dev = AudioObjectID(0)
-    var size = UInt32(MemoryLayout<AudioObjectID>.size)
-    let st = withUnsafePointer(to: &cfUID) {
-        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr,
-                                   UInt32(MemoryLayout<CFString>.size), $0, &size, &dev)
-    }
-    return st == noErr && dev != 0 ? dev : nil
+func address(_ sel: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal,
+                               mElement: kAudioObjectPropertyElementMain)
 }
 
-guard let dev = deviceByUID(DEVICE_UID) else { fail("Meeting Input not found (run meeting-devices)") }
+func defaultInputUID() -> String? {
+    var addr = address(kAudioHardwarePropertyDefaultInputDevice)
+    var mic = AudioObjectID(0)
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &mic) == noErr,
+          mic != 0 else { return nil }
+    addr = address(kAudioDevicePropertyDeviceUID)
+    var uid: Unmanaged<CFString>?
+    size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    guard AudioObjectGetPropertyData(mic, &addr, 0, nil, &size, &uid) == noErr else { return nil }
+    return uid?.takeRetainedValue() as String?
+}
+
+// Far end = a process tap on everything the Mac plays, whatever device each app
+// sends it to (WhatsApp ignores the default output once a call is up). The tap
+// and the mic form a private aggregate that lives only as long as this process:
+// mic channels first, the tap's 2 channels last, as transcribe-meeting expects.
+// TCCAccessPreflight is private API (as AudioCap uses it): 0 = granted.
+// A missing grant still records the mic, so warn instead of failing.
+if let tcc = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW),
+   let sym = dlsym(tcc, "TCCAccessPreflight") {
+    typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int
+    if unsafeBitCast(sym, to: Preflight.self)("kTCCServiceAudioCapture" as CFString, nil) != 0 {
+        FileHandle.standardError.write(Data(("meeting-capture: WARNING: no System Audio Recording permission, " +
+            "the other side will be SILENT. Grant it: System Settings > Privacy & Security > " +
+            "Screen & System Audio Recording > System Audio Recording Only > + iTerm, then restart iTerm.\n").utf8))
+    }
+}
+
+guard let micUID = defaultInputUID() else { fail("no default input device") }
+let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+tapDesc.isPrivate = true
+var tap = AudioObjectID(0)
+let tapSt = AudioHardwareCreateProcessTap(tapDesc, &tap)
+guard tapSt == noErr else { fail("could not create the system audio tap (OSStatus \(tapSt))") }
+let aggUID = UUID().uuidString
+let aggDesc: [String: Any] = [
+    "name": "Meeting Capture", "uid": aggUID, "private": true, "stacked": false,
+    "master": micUID, "tapautostart": true,
+    "subdevices": [["uid": micUID]],
+    "taps": [["uid": tapDesc.uuid.uuidString, "drift": true]],
+]
+var dev = AudioObjectID(0)
+let aggSt = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &dev)
+guard aggSt == noErr else { fail("could not create the capture device (OSStatus \(aggSt))") }
 
 var rateAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
                                           mScope: kAudioObjectPropertyScopeGlobal,
@@ -55,24 +95,17 @@ let cfg = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 16)
 guard AudioObjectGetPropertyData(dev, &cfgAddr, 0, nil, &size, cfg) == noErr else { fail("no stream config") }
 let channels = UnsafeMutableAudioBufferListPointer(cfg.assumingMemoryBound(to: AudioBufferList.self))
     .reduce(UInt32(0)) { $0 + $1.mNumberChannels }
-guard channels > 0 else { fail("Meeting Input has no input channels") }
+guard channels > 0 else { fail("capture device has no input channels") }
 
 if CommandLine.arguments.dropFirst().first == "--format" {
     print("\(Int(rate)) \(channels)")
     exit(0)
 }
 
-var fmt = AudioStreamBasicDescription(
-    mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
-    mFormatFlags: kLinearPCMFormatFlagIsFloat | kLinearPCMFormatFlagIsPacked,
-    mBytesPerPacket: 4 * channels, mFramesPerPacket: 1, mBytesPerFrame: 4 * channels,
-    mChannelsPerFrame: channels, mBitsPerChannel: 32, mReserved: 0)
-
 signal(SIGPIPE, SIG_IGN)   // a closed stdout is the stop signal: handled as EPIPE below
 var nextSample: Float64 = -1
 var lostFrames: Float64 = 0
-var queue: AudioQueueRef?
-let cbQueue = DispatchQueue(label: "meeting-capture")
+let writer = DispatchQueue(label: "meeting-capture")
 
 func finish() -> Never {
     if lostFrames > 0 {
@@ -81,36 +114,71 @@ func finish() -> Never {
     exit(0)
 }
 
-let st = AudioQueueNewInputWithDispatchQueue(&queue, &fmt, 0, cbQueue) { q, buf, start, _, _ in
-    if start.pointee.mFlags.contains(.sampleTimeValid) {
-        if nextSample >= 0, start.pointee.mSampleTime > nextSample + 1 {
-            lostFrames += start.pointee.mSampleTime - nextSample
+// The aggregate delivers one buffer per stream (mic, tap), each interleaved on
+// its own; weave them into one interleaved frame stream.
+var ioProc: AudioDeviceIOProcID?
+let ioSt = AudioDeviceCreateIOProcIDWithBlock(&ioProc, dev, nil) { _, input, inTime, _, _ in
+    let bufs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+    guard let first = bufs.first, first.mNumberChannels > 0 else { return }
+    let frames = Int(first.mDataByteSize) / 4 / Int(first.mNumberChannels)
+    if inTime.pointee.mFlags.contains(.sampleTimeValid) {
+        if nextSample >= 0, inTime.pointee.mSampleTime > nextSample + 1 {
+            lostFrames += inTime.pointee.mSampleTime - nextSample
         }
-        nextSample = start.pointee.mSampleTime + Float64(buf.pointee.mAudioDataByteSize / fmt.mBytesPerFrame)
+        nextSample = inTime.pointee.mSampleTime + Float64(frames)
     }
-    var p = buf.pointee.mAudioData
-    var left = Int(buf.pointee.mAudioDataByteSize)
-    while left > 0 {
-        let n = write(1, p, left)
-        if n < 0 { if errno == EINTR { continue }; finish() }   // reader gone
-        p += n; left -= n
+    let nch = Int(channels)
+    // ponytail: allocates on the IO thread; a preallocated ring buffer if glitches ever show up.
+    var out = Data(count: frames * nch * 4)
+    out.withUnsafeMutableBytes { raw in
+        let dst = raw.bindMemory(to: Float.self)
+        var c0 = 0
+        for b in bufs {
+            let n = Int(b.mNumberChannels)
+            if let src = b.mData?.assumingMemoryBound(to: Float.self) {
+                for f in 0..<min(frames, Int(b.mDataByteSize) / 4 / max(n, 1)) {
+                    for k in 0..<n { dst[f * nch + c0 + k] = src[f * n + k] }
+                }
+            }
+            c0 += n
+        }
     }
+    writer.async {
+        out.withUnsafeBytes { raw in
+            var p = raw.baseAddress!
+            var left = raw.count
+            while left > 0 {
+                let n = write(1, p, left)
+                if n < 0 { if errno == EINTR { continue }; finish() }   // reader gone
+                p += n; left -= n
+            }
+        }
+    }
+}
+guard ioSt == noErr, let ioProc else { fail("could not attach to the capture device (OSStatus \(ioSt))") }
+// Keep-alive: the tap stops whenever nothing on the Mac is playing, and it
+// stalls the whole aggregate, mic included (2026-10-18: zero callbacks until a
+// sound played). So play silence to the default output for as long as we run.
+var silentFmt = AudioStreamBasicDescription(
+    mSampleRate: 48000, mFormatID: kAudioFormatLinearPCM,
+    mFormatFlags: kLinearPCMFormatFlagIsFloat | kLinearPCMFormatFlagIsPacked,
+    mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
+    mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+var silent: AudioQueueRef?
+guard AudioQueueNewOutputWithDispatchQueue(&silent, &silentFmt, 0, DispatchQueue(label: "silence"), { q, buf in
+    memset(buf.pointee.mAudioData, 0, Int(buf.pointee.mAudioDataBytesCapacity))
+    buf.pointee.mAudioDataByteSize = buf.pointee.mAudioDataBytesCapacity
     AudioQueueEnqueueBuffer(q, buf, 0, nil)
-}
-guard st == noErr, let q = queue else { fail("AudioQueueNewInput failed (OSStatus \(st))") }
-
-var uid = DEVICE_UID as CFString
-guard withUnsafePointer(to: &uid, {
-    AudioQueueSetProperty(q, kAudioQueueProperty_CurrentDevice, $0, UInt32(MemoryLayout<CFString>.size))
-}) == noErr else { fail("could not select Meeting Input") }
-
-// 8 x 100 ms: the reader can stall ~0.7 s before anything is lost.
-let bufBytes = UInt32(rate / 10) * fmt.mBytesPerFrame
-for _ in 0..<8 {
+}) == noErr, let silent else { fail("could not start the keep-alive output") }
+for _ in 0..<3 {
     var b: AudioQueueBufferRef?
-    guard AudioQueueAllocateBuffer(q, bufBytes, &b) == noErr, let b else { fail("buffer alloc failed") }
-    AudioQueueEnqueueBuffer(q, b, 0, nil)
+    guard AudioQueueAllocateBuffer(silent, 4800 * 8, &b) == noErr, let b else { fail("buffer alloc failed") }
+    memset(b.pointee.mAudioData, 0, Int(b.pointee.mAudioDataBytesCapacity))
+    b.pointee.mAudioDataByteSize = b.pointee.mAudioDataBytesCapacity
+    AudioQueueEnqueueBuffer(silent, b, 0, nil)
 }
-let started = AudioQueueStart(q, nil)
-guard started == noErr else { fail("AudioQueueStart failed (OSStatus \(started))") }
+guard AudioQueueStart(silent, nil) == noErr else { fail("could not start the keep-alive output") }
+
+let started = AudioDeviceStart(dev, ioProc)
+guard started == noErr else { fail("could not start capture (OSStatus \(started))") }
 dispatchMain()

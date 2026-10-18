@@ -33,17 +33,16 @@ pre-step for both. Each dir has its own README and, where it needs them, its own
 ```sh
 git clone <this-repo> Transcriber
 cd Transcriber
-./install.sh          # run in a Terminal — BlackHole needs your macOS password
+./install.sh
 ```
 
 `install.sh` is idempotent (safe to re-run). It:
-- installs Homebrew (if missing), then `whisper-cpp`, `ffmpeg`,
-  `switchaudio-osx`, and the `blackhole-2ch` cask;
+- installs Homebrew (if missing), then `whisper-cpp`, `ffmpeg`, and `mpv`;
 - verifies the model file `ggml-model-whisper-custom.bin` by size and downloads
   it only if missing/corrupt (it is **not** committed to git — ~3 GB);
 - downloads the small Silero VAD model `ggml-silero-v5.1.2.bin` (~865 KB,
   size-verified, also gitignored);
-- compiles the Swift CoreAudio helper `meeting-devices` into `~/bin`;
+- compiles the Swift CoreAudio helper `meeting-capture` into `~/bin`;
 - symlinks `record`, `transcribe`, `transcribe-meeting`, and `notion-meeting`
   into `~/bin` and adds `~/bin` to your `PATH` in `~/.zshrc` if it isn't already
   there.
@@ -55,10 +54,10 @@ Open a new terminal (or `source ~/.zshrc`) afterward so `~/bin` is on `PATH`.
 ```sh
 record                 # or: record standup   -> ~/Recordings/standup-<timestamp>.m4a
 ```
-`record` builds the audio devices around your **current** default mic/output
-(so it keeps working when you switch to AirPods), switches system output to
-"Meeting Output" while recording, and restores your previous output on exit —
-including Ctrl-C. Press **Ctrl-C once** to stop and wait a moment — repeated
+`record` captures your current default mic plus everything the Mac plays,
+through a CoreAudio process tap: it works whatever output device the call app
+uses (WhatsApp ignores the default output), and even with the speakers muted.
+Nothing is switched or rerouted. Press **Ctrl-C once** to stop and wait a moment — repeated
 presses hard-kill ffmpeg. (Recordings are written as fragmented mp4, so even a
 hard kill loses at most the last ~5 seconds.) It then **automatically transcribes
 the recording and creates a Notion "Meeting Notes" page** — auto-generated
@@ -88,7 +87,7 @@ fine. Writes `<name>.txt` and `<name>.srt` next to each input. `transcribe` is
 the plain single-track path; the split-channel `[Me]`/`[Them]` transcript is
 produced by `transcribe-meeting <recording.m4a>`, which `record` and
 `notion-meeting` call for you. `transcribe-meeting` splits the recording's
-channels (mic first, BlackHole last), transcribes each side, and merges the two
+channels (mic first, system audio last), transcribes each side, and merges the two
 by timestamp into one labeled `<name>.txt`. Recordings with 1–2 channels (old
 single-track files) fall through to plain `transcribe` unchanged.
 
@@ -118,28 +117,23 @@ export TRANSCRIBE_PROMPT="Economics seminar. Terms: identification, instrumental
 
 ## Manual steps (unavoidable)
 
-1. **macOS password** — once, when `install.sh` installs BlackHole. If
-   "Meeting Input/Output" still can't be created afterwards (BlackHole not
-   visible as an audio device), run `sudo killall coreaudiod` once to load the
-   new driver.
+1. **System Audio Recording permission** — once: System Settings → Privacy &
+   Security → Screen & System Audio Recording → *System Audio Recording Only* →
+   **+** → iTerm, then restart iTerm. macOS never prompts for it (iTerm doesn't
+   ask), and without it the far end records as silence; `meeting-capture` prints
+   a WARNING at start when the grant is missing. Processes started before the
+   restart (e.g. an old tmux server) keep the old, ungranted state.
 2. **Microphone permission** — the first time you `record`, macOS shows a
    mic-access dialog; click **Allow** (for your terminal app).
-3. **Zoom** — leave audio output on **"Same as System"** (Zoom's default) so it
-   plays through Meeting Output and gets captured.
 
 ## Notes
 
-- **Volume keys stop working while recording.** That's expected macOS behavior
-  with any multi-output device active; it reverts when `record` restores your
-  output on exit.
 - **Use headphones during calls.** With speakers, the mic also picks up the room
   echo of the far end — it still transcribes, just messier.
 - **Speed:** large-v3 on Apple Silicon runs ≈ 2–4× realtime (a 1-hour meeting
   transcribes in ≈ 15–30 min). Split-channel meetings transcribe **twice** (near
   and far), so budget roughly double that; VAD claws some of it back by skipping
   silence. First run of `transcribe` loads the 3 GB model, which takes a bit longer.
-- If `record` reports "the default input/output is BlackHole itself", set a real
-  device as your system default in System Settings → Sound, then rerun.
 
 ## Lecture subtitles (`lecture-subtitles`)
 

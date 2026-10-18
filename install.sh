@@ -20,24 +20,13 @@ fi
 eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || brew shellenv)"
 
 # 2. Formulae
-for f in whisper-cpp ffmpeg switchaudio-osx mpv; do
+for f in whisper-cpp ffmpeg mpv; do
   if brew list --formula "$f" >/dev/null 2>&1; then
     print "$f: already installed"
   else
     brew install "$f"
   fi
 done
-
-# 3. BlackHole (cask; needs the macOS password, so only attempt with a terminal)
-if brew list --cask blackhole-2ch >/dev/null 2>&1; then
-  print "blackhole-2ch: already installed"
-elif [[ -t 0 ]]; then
-  print "Installing blackhole-2ch (will prompt for your macOS password)..."
-  brew install --cask blackhole-2ch
-else
-  print "blackhole-2ch: not installed and no interactive terminal for the password prompt."
-  print "  Run ./install.sh in a terminal to finish installing it."
-fi
 
 # 4. Model: verify size, download only if missing/corrupt
 if [[ -f $MODEL && $(stat -f%z "$MODEL") -eq $MODEL_SIZE ]]; then
@@ -59,7 +48,7 @@ fi
 
 # 5. Compile the Swift CoreAudio helpers (skip if binary is up to date)
 mkdir -p "$BIN"
-for tool in meeting-devices meeting-capture; do
+for tool in meeting-capture; do
   if [[ ! -x $BIN/$tool || $REPO/$tool.swift -nt $BIN/$tool ]]; then
     print "compiling $tool..."
     swiftc -O -framework CoreAudio -framework AudioToolbox \
@@ -77,7 +66,7 @@ ln -sf "$REPO/transcribe" "$BIN/transcribe"
 ln -sf "$REPO/transcribe-meeting" "$BIN/transcribe-meeting"
 ln -sf "$REPO/notion-meeting" "$BIN/notion-meeting"
 ln -sf "$REPO/lecture-subtitles" "$BIN/lecture-subtitles"
-print "installed: record, transcribe, transcribe-meeting, notion-meeting, lecture-subtitles, meeting-devices, meeting-capture -> $BIN"
+print "installed: record, transcribe, transcribe-meeting, notion-meeting, lecture-subtitles, meeting-capture -> $BIN"
 
 # 7. Ensure ~/bin is on PATH (append to ~/.zshrc only if missing)
 case ":$PATH:" in

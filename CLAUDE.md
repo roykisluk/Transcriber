@@ -308,3 +308,38 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   **wall clock**, never `-t N` (raw PCM pts come from the sample count, so it always reads 100%).
   Run `record` copies from a scratch dir with a stub `notion-meeting` beside them (found
   via `${0:A:h}`) to test end-to-end without creating Notion pages.
+
+### 2026-10-18 — WhatsApp call: the other side recorded as pure silence (FIXED same day)
+- **Symptom:** `meeting-20261018-133732` (WhatsApp desktop call): far channels exact −inf
+  for the whole call; mic fine. Output was on Meeting Output; a test `afplay` DID reach
+  BlackHole, so the routing worked — WhatsApp just never played into it. It has no
+  speaker setting; setting the *system-sound* output to Meeting Output mid-call didn't help
+  (it likely binds its device at call start — not verified).
+- **Fix: drop BlackHole + output switching; capture the far end with a CoreAudio process
+  tap** (`CATapDescription(stereoGlobalTapButExcludeProcesses: [])`, macOS 14.2+). The tap
+  hears every app whatever device it plays to, even with the speakers **muted** (tested).
+  `meeting-capture` builds a private aggregate = default mic + tap (mic first, tap's 2
+  channels last, so `transcribe-meeting`'s near/far split is unchanged). `record` no
+  longer touches the output device; `meeting-devices` deleted. (Built-in mic now shows as
+  1 channel in the aggregate → files are 3-ch, not 5.)
+- **Trap 1 — permission, silently.** The tap needs "System Audio Recording" for the
+  *responsible* app (iTerm). iTerm has no `NSAudioCaptureUsageDescription`, so macOS
+  never prompts; ungranted taps deliver exact zeros, no error. Grant by hand (Settings →
+  Screen & System Audio Recording → System Audio Recording Only → + iTerm) and restart
+  iTerm. Processes under a tmux server started by the old iTerm keep the old state; test
+  from a fresh window (`osascript -e 'tell application "iTerm" to create window with
+  default profile command "zsh script.sh"'`). Check with private
+  `TCCAccessPreflight("kTCCServiceAudioCapture")` (0 = granted, 2 = undecided);
+  `meeting-capture` now warns at start when it isn't 0.
+- **Trap 2 — AudioQueue reads zeros from a tap aggregate**, even granted, while an
+  IOProc (`AudioDeviceCreateIOProcIDWithBlock`) on the same device gets the audio. The
+  aggregate delivers one buffer per stream (mic, tap) → interleave them by hand.
+- **Trap 3 — the tap stalls the whole aggregate when nothing is playing**: zero IOProc
+  callbacks, mic included, until any sound plays. Fix: `meeting-capture` plays silence to
+  the default output (AudioQueue output) for its lifetime. Verified: 30 s idle + beeps →
+  mic throughout, beeps on the tap, 60.03 s decoded for 60 s, no lost frames.
+- **Not a bug:** ffmpeg flushes the m4a in 256 KiB chunks (≈21 s at 96 kb/s), so a live
+  file is 28 bytes for the first ~20 s. Don't diagnose a recording younger than that.
+- **Unverified:** a real WhatsApp call through the tap (only `afplay` tested), and output
+  device switching mid-recording (AirPods).
+- **Today's file:** far channel is silent → its `[Them]` lines, if any, are hallucinated.

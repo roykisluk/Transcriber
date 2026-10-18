@@ -1,11 +1,11 @@
 #!/usr/bin/env zsh
 # transcribe-meeting <recording.m4a>
-# Split-channel transcription for "Meeting Input" aggregate recordings.
-# The aggregate records mic channels FIRST, BlackHole's 2 channels LAST, so:
+# Split-channel transcription for `record` recordings.
+# record writes mic channels FIRST, the system-audio tap's 2 channels LAST, so:
 # (AAC canonical layout preserving capture order: verified on a real 3-ch
 # recording 2026-07-20 — [Me]=mic, [Them]=system came out correctly.)
 #   near ("[Me]")   = downmix of channels 0 .. N-3   (your mic)
-#   far  ("[Them]") = downmix of the last two, N-2,N-1 (system / Zoom)
+#   far  ("[Them]") = downmix of the last two, N-2,N-1 (system audio: the call)
 # Transcribes each side separately, then merges the two .srt by start time into
 # one speaker-labeled <recording>.txt next to the recording.
 #
