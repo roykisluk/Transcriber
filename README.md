@@ -70,7 +70,14 @@ transcription or the upload fails, the recording is safe on disk and it prints
 the exact `notion-meeting` command to retry.
 
 Requires the `claude` CLI logged in (`claude login`) with the Notion connector
-enabled — the upload uses your Claude Max subscription, no API key.
+enabled — the upload uses your Claude Max subscription, no API key. Creating the page
+and appending the transcript use a Notion integration token and your Meeting Notes
+database's data source id, both kept in the login Keychain:
+
+```sh
+security add-generic-password -a notion-meeting -s notion-api-token -w          # paste the token
+security add-generic-password -a notion-meeting -s notion-meetings-ds -w <id>   # or export NOTION_MEETINGS_DS
+```
 
 ```sh
 notion-meeting ~/Recordings/standup-20260719-143000.m4a        # or ... "Weekly sync"

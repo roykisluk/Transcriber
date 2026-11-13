@@ -7,8 +7,12 @@ set -uo pipefail
 (( $# == 2 )) || { print -u2 "usage: notion-meeting-page <title> <date-utc-iso>"; exit 2; }
 
 token=$(security find-generic-password -a notion-meeting -s notion-api-token -w) || exit 1
-body=$(jq -n --arg t "$1" --arg d "$2" '{
-  parent: {type: "data_source_id", data_source_id: "361855af-1443-80f8-89a9-000bc7ba232b"},
+# The Meeting Notes database's data source id (Notion: database ... -> Copy data source ID).
+ds=${NOTION_MEETINGS_DS:-$(security find-generic-password -a notion-meeting -s notion-meetings-ds -w 2>/dev/null)}
+[[ -n $ds ]] || { print -u2 "notion-meeting-page: set NOTION_MEETINGS_DS, or:
+  security add-generic-password -a notion-meeting -s notion-meetings-ds -w <data-source-id>"; exit 1; }
+body=$(jq -n --arg t "$1" --arg d "$2" --arg ds "$ds" '{
+  parent: {type: "data_source_id", data_source_id: $ds},
   properties: {"Meeting name": {title: [{text: {content: $t}}]}, Date: {date: {start: $d}}},
   children: [
     {type: "heading_2", heading_2: {rich_text: [{text: {content: "My Notes"}}]}},

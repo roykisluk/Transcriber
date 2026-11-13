@@ -151,15 +151,15 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   mid-run edit can corrupt the part not yet parsed. Fix after the batch exits.
 
 ### 2026-09-22 — a garbled tail is not automatically a hallucination
-- **Symptom:** a 26 s Hebrew WhatsApp voice note ended with `בכיכר תה ביציאה השנייה,
-  אין שלום רוזנפלד` — nonsense in context (an econ argument about labor-share channels),
+- **Symptom:** a 26 s Hebrew WhatsApp voice note ended with a garbled phrase
+  — nonsense in context (an econ argument about labor-share channels),
   exactly the shape of the decode-loop damage from 2026-08-11.
 - **Root cause:** not whisper. It is **Waze talking over the speaker** — "בכיכר, צא
   ביציאה השנייה" (at the roundabout, take the second exit) plus a street name. The
   sender recorded while driving.
 - **How to tell the two apart, cheaply:** re-decode the slice **with the other model**.
   Context carry-over is model-specific; real audio is not. The Hebrew fine-tune and
-  stock `ggml-large-v3.bin` produced the same words here (`רוזנטל`/`רוזנפלד` apart), so
+  stock `ggml-large-v3.bin` produced the same words here, so
   it is signal. A loop would have decoded correctly with fresh context — that was the
   2026-08-11 test and it is the *opposite* result.
 - **Also worth the 10 s:** compare the last `.srt` timestamp against the file duration.
@@ -208,8 +208,8 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   click on the popup, or the timer firing at a real meeting join.
 
 ### 2026-10-11 — Notion page created without a Date
-- **Symptom:** the 2026-10-07 Eitan meeting page ("High-Tech Expansion & Inequality
-  Model…") had an empty Date; the 7 pages around it were fine.
+- **Symptom:** the 2026-10-07 meeting page
+  had an empty Date; the 7 pages around it were fine.
 - **Root cause:** `notion-meeting` left the Date to the headless `claude -p` call. Its
   session log shows the `notion-create-pages` call set only Meeting name + Summary.
   The prompt says "non-negotiable"; the model skipped it anyway, and nothing checked.
@@ -220,8 +220,8 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
 - **Lesson:** anything deterministic (date, parent) belongs in the script, not the
   prompt. The model is only there for title + summary.
 - **Related gotcha:** an auto-titled page doesn't contain the attendee's name (an
-  in-person recording is all `[Me]`), so a Notion search for "Tomer" misses it. Pass
-  the name: `record meeting "Tomer"`.
+  in-person recording is all `[Me]`), so a Notion search for the attendee misses it. Pass
+  the name: `record meeting "Dana"`.
 
 ### 2026-10-15 — `tbox transcribe` now splits meeting channels itself
 - **Want:** GPU transcription (tbox, ivrit-ai turbo) of a `record` file with the same
@@ -254,7 +254,7 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
   installs an INT handler (perl `$SIG{INT}`), as record does.
 
 ### 2026-10-17 — one meeting split across Voice Memos + `record`
-- **Case:** Ofir meeting 2026-10-16 = two iPhone Voice Memos (10:23, 10:42) + one `record`
+- **Case:** a meeting on 2026-10-16 = two iPhone Voice Memos (10:23, 10:42) + one `record`
   (11:54), back to back, in person. Wanted one Notion page, not three.
 - **Voice Memos live at** `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/`;
   start time + duration from `CloudRecordings.db` table `ZCLOUDRECORDING` (`ZDATE` is
@@ -375,3 +375,10 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
 - **Not yet seen:** a full real `record` run; whether the summary should also read Roy's
   My Notes (it doesn't — the model is told only not to touch them). Discard (USR1)
   leaves the page in Notion.
+
+### 2026-11-13 — cleaned for a public repo
+- Meeting Notes data source id moved out of `notion-meeting-page` into the Keychain
+  (`-a notion-meeting -s notion-meetings-ds`, or env `NOTION_MEETINGS_DS`); README shows setup.
+- Attendee names and a street name removed from this log; MIT LICENSE added. Older commits
+  still hold them (and the id): harmless without the Notion token, history not rewritten.
+- Keep it this way: no attendee names, meeting content, or Notion ids in tracked files.
