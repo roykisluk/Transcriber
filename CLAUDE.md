@@ -355,3 +355,23 @@ The header blames `-mc 192` for a "lowercase run-on gibberish" collapse. On this
 - **Check:** `say` clip with econ terms → all right except "two-stage" → "II-stage" (synthetic
   voice?); ~3 min per call, mostly vLLM startup (paid twice per `record`: near + far).
   vLLM chatter lands in `.segments.txt`; the [Me]/[Them] merge reads only timestamp lines.
+
+### 2026-11-13 — `record` opens a Notion page for Roy's own notes at the start
+- **Want:** a Meeting Notes page exists (and is open in the Notion app) while the
+  meeting runs, so Roy can type notes; the agent fills it in afterwards. Every meeting
+  page starts with a `## My Notes` section.
+- **Design:** `notion-meeting-page <title> <utc-date>` (REST, `Notion-Version: 2025-09-03`
+  — the first that takes a `data_source_id` parent) creates the page with Date and an
+  empty My Notes section, prints the id. `record` runs it in the background after
+  ffmpeg starts (no audio cost), title = `Meeting YYYY-MM-DD HH:MM` unless named, Date =
+  start time, then `open notion://www.notion.so/<id>`. `notion-meeting` now **updates**
+  `NOTION_PAGE` (or makes a page with the helper, dated from mtime) — the model gets only
+  `notion-update-page`: `update_properties` (name + Summary) and `insert_content` at
+  `end`. This closes the old "no update-in-place path" open item: rerun with
+  `NOTION_PAGE=<id> notion-meeting …`. Date PATCH removed (the helper sets it).
+- **Tested:** fake 3-line transcript into a test page → My Notes on top, Action Items +
+  sections, Transcript last, renamed by the model; test page trashed.
+- **Hyper+R** (Hammerspoon `init.lua`, MacSync) = `record` in a new iTerm tab.
+- **Not yet seen:** a full real `record` run; whether the summary should also read Roy's
+  My Notes (it doesn't — the model is told only not to touch them). Discard (USR1)
+  leaves the page in Notion.

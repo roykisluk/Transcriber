@@ -8,6 +8,7 @@ set -uo pipefail
 name_arg=${1:-}            # empty unless the user actually named the meeting
 name=${name_arg:-meeting}  # filename stem only; never used as the Notion title
 MEETING_CAPTURE=${MEETING_CAPTURE:-"$HOME/bin/meeting-capture"}
+here=${0:A:h}   # inside a function $0 is the function's name
 
 command -v ffmpeg >/dev/null 2>&1 || { print -u2 "record: ffmpeg not found (run install.sh)."; exit 1; }
 [[ -x $MEETING_CAPTURE ]] || { print -u2 "record: $MEETING_CAPTURE missing (run install.sh)."; exit 1; }
@@ -50,6 +51,15 @@ ff_pid=$!
 stop() { kill -INT "$ff_pid" 2>/dev/null || true; }
 trap stop INT TERM
 
+# Notion page for Roy's own notes, opened in the Notion app while recording.
+# Tentative title (the date) unless a name was given; notion-meeting renames it
+# and appends the summary + transcript below "My Notes". Backgrounded: no audio
+# is lost waiting on the network. No page (offline) -> notion-meeting makes one.
+page_file="$HOME/Recordings/.record-page.$$"
+{ id=$("$here/notion-meeting-page" "${name_arg:-Meeting $(date '+%Y-%m-%d %H:%M')}" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)") \
+    && print $id > "$page_file" && open "notion://www.notion.so/$id"; } &!
+
 # RECORD_CONTROL=<pidfile>: started by Hammerspoon's zoom_record, whose popup
 # answers instead of the terminal prompt below — by signal, to the pid written
 # here. USR1 = discard (stop + delete), USR2 = English. Traps go in before the
@@ -87,7 +97,7 @@ export TRANSCRIBE_LANG=$lang
 if [[ -n ${RECORD_CONTROL:-} ]]; then
   rm -f "$RECORD_CONTROL"
   if (( discard )); then
-    rm -f "$out"
+    rm -f "$out" "$page_file"
     print "Discarded: $out"
     exit 0
   fi
@@ -100,6 +110,9 @@ if [[ ! -f $out ]]; then
 fi
 print "Saved: $out"
 txt="${out:r}.txt"
+export NOTION_PAGE=$(cat "$page_file" 2>/dev/null)
+rm -f "$page_file"
+retry="${NOTION_PAGE:+NOTION_PAGE=$NOTION_PAGE }notion-meeting \"$out\"${name_arg:+ \"$name_arg\"}"
 
 # Pass the user's name to Notion only if they actually gave one.
 nm=("$out")
@@ -107,7 +120,6 @@ nm=("$out")
 
 # tbox's GPU (ivrit-ai turbo) first; `tbox transcribe` splits [Me]/[Them] itself.
 # timeout: ssh's ConnectTimeout doesn't cover the Cloudflare ProxyCommand.
-here=${0:A:h}   # inside a function $0 is the function's name
 tx() {
   timeout 20 ssh -o BatchMode=yes devbox true 2>/dev/null \
     && zsh -ic "tbox transcribe -l $lang ${(q)out}" && return
@@ -117,12 +129,12 @@ tx() {
 if ! tx; then
   print -u2 "record: transcription failed."
   print -u2 "Recording is safe at: $out"
-  print -u2 "Retry with:  notion-meeting \"$out\"${name_arg:+ \"$name_arg\"}"
+  print -u2 "Retry with:  $retry"
   exit 1
 fi
 if ! "${0:A:h}/notion-meeting" "${nm[@]}"; then
   print -u2 "record: Notion upload failed (transcript is on disk)."
-  print -u2 "Retry with:  notion-meeting \"$out\"${name_arg:+ \"$name_arg\"}"
+  print -u2 "Retry with:  $retry"
   exit 1
 fi
 
